@@ -1,0 +1,6 @@
+{
+  "name": "ShowroomOS — Dealership & People Management",
+  "description": "Royal Enfield Showroom Proposal demo for Ideal Motors Sri Lanka — CRM, inventory allocation, verified bookings, PDI deliveries, and HR operations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

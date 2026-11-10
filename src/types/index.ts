@@ -1,0 +1,215 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+export type LeadStatus =
+  | 'New'
+  | 'Contacted'
+  | 'Test Ride'
+  | 'Quoted'
+  | 'Booked'
+  | 'Closed'
+  | 'Lost';
+
+export type LeadSource =
+  | 'Walk-in'
+  | 'Digital inquiry'
+  | 'Test ride event'
+  | 'Phone'
+  | 'Referral';
+
+export interface LeadNote {
+  id: string;
+  date: string; // DD/MM/YYYY
+  author: string;
+  text: string;
+}
+
+export interface Lead {
+  id: string;
+  customerName: string;
+  phone: string;
+  email: string;
+  city: string;
+  modelInterest: string;
+  colorPreference: string;
+  salespersonId: string;
+  salespersonName: string;
+  source: LeadSource;
+  status: LeadStatus;
+  nextFollowUpDate: string; // DD/MM/YYYY
+  notes: LeadNote[];
+  createdAt: string; // DD/MM/YYYY
+  bookingId?: string;
+}
+
+export type BikeStatus = 'Available' | 'Reserved' | 'Demo' | 'Delivered';
+
+export type BikeLocation =
+  | 'Colombo Flagship Floor'
+  | 'Warehouse A - Kelaniya'
+  | 'Colombo 03 Transit'
+  | 'Pre-Delivery Bay';
+
+export interface Bike {
+  id: string;
+  model: string;
+  variant: string;
+  colour: string;
+  chassisNumber: string; // synthetic VIN
+  engineNumber: string; // synthetic engine no
+  year: number;
+  location: BikeLocation;
+  priceLkr: number; // Illustrative price in LKR
+  status: BikeStatus;
+  imageKey: string;
+  imageUrl?: string;
+  allocatedBookingId?: string;
+  arrivalDate: string; // DD/MM/YYYY
+  displacementCc: number;
+  powerBhp: string;
+}
+
+export type PaymentType =
+  | 'Booking Advance'
+  | 'Down Payment'
+  | 'Finance Settlement'
+  | 'Final Settlement';
+
+export interface PaymentRecord {
+  id: string;
+  date: string; // DD/MM/YYYY
+  amountLkr: number;
+  type: PaymentType;
+  reference: string;
+  status: 'Pending Verification' | 'Verified';
+  verifiedBy?: string;
+  verifiedAt?: string;
+}
+
+export interface DeliveryChecklist {
+  paymentVerified: boolean; // Balance 0 and all payments verified
+  documentsChecked: boolean; // NIC copy, Revenue License application, Registration docs, Insurance cover note
+  pdiCompleted: boolean; // Battery check, mirror install, toolkit, fluids, tire pressure, road test
+  customerOrientationDone: boolean; // Features, warranty, first service schedule
+  deliveryNotes: string;
+}
+
+export type BookingStatus = 'Confirmed' | 'Delivered' | 'Cancelled';
+
+export interface BookingTimelineItem {
+  id: string;
+  date: string; // DD/MM/YYYY HH:mm
+  title: string;
+  description: string;
+  type: 'lead' | 'booking' | 'payment' | 'pdi' | 'delivery' | 'status';
+}
+
+export interface Booking {
+  id: string; // e.g. BK-2026-0042
+  leadId?: string;
+  customerName: string;
+  customerPhone: string;
+  customerNIC: string; // Synthetic masked NIC
+  customerAddress: string;
+  salespersonId: string;
+  salespersonName: string;
+  bikeId: string;
+  bikeModel: string;
+  bikeColour: string;
+  bikeChassis: string;
+  bikeEngine: string;
+  totalPriceLkr: number;
+  discountLkr: number;
+  finalPriceLkr: number;
+  payments: PaymentRecord[];
+  status: BookingStatus;
+  deliveryChecklist: DeliveryChecklist;
+  deliveredAt?: string;
+  deliveredBy?: string;
+  createdAt: string; // DD/MM/YYYY
+  timeline: BookingTimelineItem[];
+}
+
+export interface EmployeeSalary {
+  basicLkr: number;
+  showroomAllowanceLkr: number;
+  salesIncentiveLkr: number;
+  illustrativeDeductionsLkr: number;
+}
+
+export interface Employee {
+  id: string;
+  empCode: string;
+  fullName: string;
+  department: 'Sales' | 'Service & PDI' | 'Showroom Operations' | 'Finance & Admin';
+  role: string;
+  manager: string;
+  email: string;
+  phone: string;
+  status: 'Active' | 'On Leave';
+  joinDate: string; // DD/MM/YYYY
+  salary: EmployeeSalary;
+}
+
+export type AttendanceStatus = 'Present' | 'Late' | 'Half Day' | 'On Leave';
+
+export interface AttendanceRecord {
+  id: string;
+  date: string; // DD/MM/YYYY
+  employeeId: string;
+  employeeName: string;
+  department: string;
+  status: AttendanceStatus;
+  checkInTime: string;
+  notes: string;
+}
+
+export type LeaveStatus = 'Pending' | 'Approved' | 'Rejected';
+
+export interface LeaveRequest {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  department: string;
+  leaveType: 'Annual' | 'Casual' | 'Medical';
+  startDate: string; // DD/MM/YYYY
+  endDate: string; // DD/MM/YYYY
+  days: number;
+  reason: string;
+  status: LeaveStatus;
+  appliedOn: string; // DD/MM/YYYY
+  decisionDate?: string;
+  decisionBy?: string;
+}
+
+export interface ServiceJobCard {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  bikeModel: string;
+  chassisNumber: string;
+  serviceType:
+    | 'Pre-Delivery Inspection (PDI)'
+    | '1st Free Service (500 km)'
+    | 'General Service & Oil'
+    | 'Warranty Inspection';
+  technicianName: string;
+  bay: string;
+  status: 'Scheduled' | 'In Progress' | 'Inspection Completed' | 'Ready for Handover';
+  scheduledDate: string; // DD/MM/YYYY
+  notes: string;
+  estimatedCostLkr: number;
+}
+
+export type DemoRole = 'management' | 'sales' | 'hr';
+export type AppView =
+  | 'dashboard'
+  | 'crm'
+  | 'inventory'
+  | 'bookings'
+  | 'delivery'
+  | 'hr'
+  | 'service'
+  | 'reports';

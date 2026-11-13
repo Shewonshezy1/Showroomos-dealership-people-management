@@ -14,72 +14,9 @@ import {
   Accessory,
   TestRideRecord,
   TradeInValuation,
-  UserSession,
 } from '../types';
 
-export const PRESET_USERS: UserSession[] = [
-  {
-    id: 'usr-001',
-    fullName: 'Roshan Samarasinghe',
-    name: 'Roshan Samarasinghe',
-    email: 'roshan.s@idealnova.lk',
-    role: 'management',
-    designation: 'General Manager',
-    roleLabel: 'General Manager',
-    department: 'Executive Management',
-    branch: 'Colombo Flagship Hub',
-    phone: '+94 77 110 2200',
-  },
-  {
-    id: 'usr-002',
-    fullName: 'Dilantha Perera',
-    name: 'Dilantha Perera',
-    email: 'dilantha.p@idealnova.lk',
-    role: 'sales',
-    designation: 'Senior Sales Consultant',
-    roleLabel: 'Senior Sales Consultant',
-    department: 'Sales & CRM',
-    branch: 'Colombo Flagship Hub',
-    phone: '+94 77 310 9920',
-  },
-  {
-    id: 'usr-003',
-    fullName: 'Shiromi Gunawardena',
-    name: 'Shiromi Gunawardena',
-    email: 'shiromi.g@idealnova.lk',
-    role: 'finance',
-    designation: 'Finance Controller & Cashier',
-    roleLabel: 'Finance Controller',
-    department: 'Finance & Accounts',
-    branch: 'Colombo Flagship Hub',
-    phone: '+94 77 882 3341',
-  },
-  {
-    id: 'usr-004',
-    fullName: 'Rohan Jayatillake',
-    name: 'Rohan Jayatillake',
-    email: 'rohan.j@idealnova.lk',
-    role: 'service',
-    designation: 'Service Head & Master PDI Tech',
-    roleLabel: 'Service Head & Master PDI Tech',
-    department: 'Service & Technical',
-    branch: 'Colombo Flagship Bay',
-    phone: '+94 72 559 1120',
-  },
-  {
-    id: 'usr-005',
-    fullName: 'Anusha Wickramasinghe',
-    name: 'Anusha Wickramasinghe',
-    email: 'anusha.w@idealnova.lk',
-    role: 'hr',
-    designation: 'HR & People Operations Lead',
-    roleLabel: 'HR & People Operations Lead',
-    department: 'Human Resources',
-    branch: 'Ideal Nova Head Office',
-    phone: '+94 71 440 8899',
-  },
-];
-
+// Reference-only illustrative catalog/stock defaults; never imported as production auth credentials.
 export const INITIAL_BIKES: Bike[] = [
   {
     id: 'bike-001',

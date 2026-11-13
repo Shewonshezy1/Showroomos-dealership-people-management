@@ -76,7 +76,7 @@ export const NotificationSimulatorModal: React.FC = () => {
           <div className="border border-stone-800 rounded-xl p-4 bg-[#0e0f12] relative">
             <div className="text-[10px] font-mono text-stone-500 uppercase tracking-wider mb-2 flex items-center justify-between">
               <span>{isWhatsApp ? 'WhatsApp Message Preview' : 'SMS Carrier Preview'}</span>
-              <span>Today · Real-Time</span>
+              <span>Today · Simulated Preview</span>
             </div>
 
             <div className={`p-3.5 rounded-lg text-xs leading-relaxed font-sans ${isWhatsApp ? 'bg-emerald-950/40 border border-emerald-800/30 text-emerald-100' : 'bg-stone-900 border border-stone-800 text-stone-200'}`}>

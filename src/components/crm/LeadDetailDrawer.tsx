@@ -210,12 +210,12 @@ export const LeadDetailDrawer: React.FC<{
                 type="button"
                 onClick={() =>
                   openNotificationModal({
-                    title: 'Royal Enfield Colombo — Proforma & Test Ride Invitation',
+                    title: 'Proforma & Test Ride Preview (Simulated)',
                     recipientName: lead.customerName,
                     recipientPhone: lead.phone,
                     channel: 'WhatsApp',
-                    purpose: 'Sales Lead Quotation Follow-up',
-                    message: `Official quotation and test ride booking invite prepared for ${lead.customerName}. Reach out via Ideal Nova Motors direct hotline (+94 11 200 4500).`,
+                    purpose: 'Simulated Lead Follow-up Preview',
+                    message: `Proforma estimate and test ride invitation draft prepared for ${lead.customerName}. Ideal Nova Motors (+94 11 200 4500).`,
                   })
                 }
                 className="flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 rounded-md border border-emerald-800/60 transition-colors"

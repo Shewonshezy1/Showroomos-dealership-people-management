@@ -40,7 +40,7 @@ export const AttachAccessoryModal: React.FC<AttachAccessoryModalProps> = ({
   const targetBooking = activeBookings.find(b => b.id === bookingId);
   const selectedAccessory = accessories.find(a => a.id === accessoryId);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -57,7 +57,7 @@ export const AttachAccessoryModal: React.FC<AttachAccessoryModalProps> = ({
       return;
     }
 
-    const res = addAccessoryToBooking(bookingId, accessoryId, quantity);
+    const res = await addAccessoryToBooking(bookingId, accessoryId, quantity);
     if (!res.success) {
       setError(res.error || 'Failed to attach accessory.');
       return;
@@ -82,7 +82,7 @@ export const AttachAccessoryModal: React.FC<AttachAccessoryModalProps> = ({
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-stone-100">Attach Genuine Accessory</h3>
+              <h3 className="text-sm font-semibold text-stone-100">Attach Accessory to Booking</h3>
               <p className="text-xs text-stone-400">Add to customer motorcycle booking & bill</p>
             </div>
           </div>

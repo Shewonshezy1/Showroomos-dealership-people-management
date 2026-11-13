@@ -1,0 +1,440 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated dealership staff account and server-controlled RBAC role assignment.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
+        },
+        "designation": { "type": "string", "maxLength": 100 },
+        "department": { "type": "string", "maxLength": 80 },
+        "branch": { "type": "string", "maxLength": 80 },
+        "disabled": { "type": "boolean" },
+        "invitedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "fullName", "role", "disabled", "createdAt", "updatedAt"]
+    },
+    "StaffDirectoryEntry": {
+      "title": "StaffDirectoryEntry",
+      "description": "Non-sensitive operational staff directory entry for showroom consultant assignments.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
+        },
+        "designation": { "type": "string", "maxLength": 100 },
+        "department": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "role", "active", "updatedAt"]
+    },
+    "StaffInvite": {
+      "title": "StaffInvite",
+      "description": "Admin-issued staff invitation binding a verified corporate email to an approved dealership role.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
+        },
+        "designation": { "type": "string", "maxLength": 100 },
+        "department": { "type": "string", "maxLength": 80 },
+        "branch": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "enum": ["Pending", "Accepted", "Revoked"] },
+        "invitedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "fullName", "role", "status", "invitedByUid", "createdAt", "updatedAt"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Customer sales inquiry tracked across the showroom CRM pipeline.",
+      "type": "object",
+      "properties": {
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "minLength": 5, "maxLength": 30 },
+        "email": { "type": "string", "maxLength": 160 },
+        "city": { "type": "string", "maxLength": 80 },
+        "modelInterest": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "colorPreference": { "type": "string", "maxLength": 80 },
+        "salespersonId": { "type": "string", "maxLength": 128 },
+        "salespersonName": { "type": "string", "maxLength": 120 },
+        "source": { "type": "string", "maxLength": 60 },
+        "status": {
+          "type": "string",
+          "enum": ["New", "Contacted", "Test Ride", "Quoted", "Booked", "Closed", "Lost"]
+        },
+        "priority": { "type": "string", "enum": ["Hot", "Warm", "Cold"] },
+        "budgetLkr": { "type": "number" },
+        "lostReason": { "type": "string", "maxLength": 300 },
+        "nextFollowUpDate": { "type": "string", "maxLength": 30 },
+        "notes": { "type": "array" },
+        "callLogs": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "bookingId": { "type": "string", "maxLength": 128 },
+        "createdByUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["customerName", "phone", "modelInterest", "status", "createdAt", "updatedAt", "createdByUid"]
+    },
+    "Bike": {
+      "title": "Bike",
+      "description": "Physical motorcycle inventory unit tracked by chassis and engine numbers.",
+      "type": "object",
+      "properties": {
+        "model": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "variant": { "type": "string", "maxLength": 100 },
+        "colour": { "type": "string", "maxLength": 80 },
+        "chassisNumber": { "type": "string", "minLength": 5, "maxLength": 60 },
+        "engineNumber": { "type": "string", "minLength": 5, "maxLength": 60 },
+        "year": { "type": "number" },
+        "location": { "type": "string", "maxLength": 80 },
+        "priceLkr": { "type": "number" },
+        "status": { "type": "string", "enum": ["Available", "Reserved", "Demo", "Delivered"] },
+        "imageKey": { "type": "string", "maxLength": 80 },
+        "allocatedBookingId": { "type": "string", "maxLength": 128 },
+        "arrivalDate": { "type": "string", "maxLength": 30 },
+        "displacementCc": { "type": "number" },
+        "powerBhp": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["model", "chassisNumber", "engineNumber", "priceLkr", "status", "updatedAt"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Customer motorcycle reservation, pricing breakdown, delivery checklist, and financial totals.",
+      "type": "object",
+      "properties": {
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerPhone": { "type": "string", "minLength": 5, "maxLength": 30 },
+        "customerNIC": { "type": "string", "minLength": 5, "maxLength": 30 },
+        "customerAddress": { "type": "string", "maxLength": 240 },
+        "salespersonId": { "type": "string", "maxLength": 128 },
+        "salespersonName": { "type": "string", "maxLength": 120 },
+        "bikeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "bikeModel": { "type": "string", "maxLength": 100 },
+        "bikeColour": { "type": "string", "maxLength": 80 },
+        "chassisNumber": { "type": "string", "maxLength": 60 },
+        "engineNumber": { "type": "string", "maxLength": 60 },
+        "totalPriceLkr": { "type": "number" },
+        "discountRequestedLkr": { "type": "number" },
+        "discountLkr": { "type": "number" },
+        "discountStatus": { "type": "string", "enum": ["None", "Pending", "Approved", "Rejected"] },
+        "discountApprovedByUid": { "type": "string", "maxLength": 128 },
+        "accessories": { "type": "array" },
+        "accessoriesTotalLkr": { "type": "number" },
+        "tradeInCreditLkr": { "type": "number" },
+        "appliedTradeInId": { "type": "string", "maxLength": 128 },
+        "finalPriceLkr": { "type": "number" },
+        "verifiedPaidLkr": { "type": "number" },
+        "balanceLkr": { "type": "number" },
+        "status": { "type": "string", "enum": ["Confirmed", "Delivered", "Cancelled"] },
+        "deliveryChecklist": { "type": "object" },
+        "deliveredDate": { "type": "string", "maxLength": 40 },
+        "deliveredBy": { "type": "string", "maxLength": 120 },
+        "cancellationReason": { "type": "string", "maxLength": 300 },
+        "leadId": { "type": "string", "maxLength": 128 },
+        "requestId": { "type": "string", "maxLength": 128 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerName", "customerPhone", "bikeId", "totalPriceLkr", "discountLkr", "finalPriceLkr", "verifiedPaidLkr", "balanceLkr", "status", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "PaymentLedgerEntry": {
+      "title": "PaymentLedgerEntry",
+      "description": "Append-only immutable payment receipt and reversal ledger record linked to a booking.",
+      "type": "object",
+      "properties": {
+        "bookingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "entryType": { "type": "string", "enum": ["PAYMENT", "REVERSAL"] },
+        "reversesPaymentId": { "type": "string", "maxLength": 128 },
+        "reversedByPaymentId": { "type": "string", "maxLength": 128 },
+        "amountLkr": { "type": "number" },
+        "type": { "type": "string", "maxLength": 60 },
+        "reference": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "date": { "type": "string", "maxLength": 30 },
+        "isVerified": { "type": "boolean" },
+        "verifiedBy": { "type": "string", "maxLength": 120 },
+        "verifiedByUid": { "type": "string", "maxLength": 128 },
+        "recordedByUid": { "type": "string", "maxLength": 128 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["bookingId", "requestId", "entryType", "amountLkr", "type", "reference", "isVerified", "recordedByUid", "createdAt", "updatedAt"]
+    },
+    "Accessory": {
+      "title": "Accessory",
+      "description": "Parts and riding accessories inventory item.",
+      "type": "object",
+      "properties": {
+        "partNumber": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "category": { "type": "string", "maxLength": 60 },
+        "compatibleModels": { "type": "array" },
+        "priceLkr": { "type": "number" },
+        "stockQuantity": { "type": "number" },
+        "description": { "type": "string", "maxLength": 400 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["partNumber", "name", "priceLkr", "stockQuantity", "updatedAt"]
+    },
+    "TestRide": {
+      "title": "TestRide",
+      "description": "Showroom test ride schedule and post-ride feedback log.",
+      "type": "object",
+      "properties": {
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerPhone": { "type": "string", "minLength": 5, "maxLength": 30 },
+        "licenseNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "model": { "type": "string", "maxLength": 100 },
+        "scheduledDate": { "type": "string", "maxLength": 30 },
+        "scheduledTime": { "type": "string", "maxLength": 30 },
+        "route": { "type": "string", "maxLength": 120 },
+        "salespersonName": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["Scheduled", "Completed", "Cancelled", "No-Show"] },
+        "feedbackRating": { "type": "number" },
+        "feedbackNotes": { "type": "string", "maxLength": 400 },
+        "convertedToLeadId": { "type": "string", "maxLength": 128 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerName", "customerPhone", "licenseNumber", "model", "status", "createdByUid", "updatedAt"]
+    },
+    "TradeIn": {
+      "title": "TradeIn",
+      "description": "Customer motorcycle trade-in valuation requiring GM or Finance approval prior to credit application.",
+      "type": "object",
+      "properties": {
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerPhone": { "type": "string", "minLength": 5, "maxLength": 30 },
+        "existingMake": { "type": "string", "maxLength": 60 },
+        "existingModel": { "type": "string", "maxLength": 80 },
+        "year": { "type": "number" },
+        "registrationNumber": { "type": "string", "maxLength": 40 },
+        "mileageKm": { "type": "number" },
+        "conditionGrade": { "type": "string", "enum": ["A (Mint)", "B (Good)", "C (Fair)"] },
+        "estimatedValuationLkr": { "type": "number" },
+        "status": { "type": "string", "enum": ["Pending Approval", "Approved", "Rejected", "Applied"] },
+        "approvedByUid": { "type": "string", "maxLength": 128 },
+        "appliedBookingId": { "type": "string", "maxLength": 128 },
+        "notes": { "type": "string", "maxLength": 400 },
+        "date": { "type": "string", "maxLength": 30 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerName", "existingModel", "estimatedValuationLkr", "status", "createdByUid", "updatedAt"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "HR staff roster entry excluding sensitive payroll figures.",
+      "type": "object",
+      "properties": {
+        "empCode": { "type": "string", "maxLength": 30 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 60 },
+        "role": { "type": "string", "maxLength": 80 },
+        "manager": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "status": { "type": "string", "enum": ["Active", "On Leave"] },
+        "joinDate": { "type": "string", "maxLength": 30 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["empCode", "fullName", "department", "role", "status", "updatedAt"]
+    },
+    "EmployeePayroll": {
+      "title": "EmployeePayroll",
+      "description": "Restricted HR-only payroll compensation figures isolated from general staff and admin roles.",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "empCode": { "type": "string", "maxLength": 30 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "basicLkr": { "type": "number" },
+        "allowancesLkr": { "type": "number" },
+        "incentiveEstimateLkr": { "type": "number" },
+        "deductionsLkr": { "type": "number" },
+        "netIllustrativeLkr": { "type": "number" },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeId", "basicLkr", "netIllustrativeLkr", "updatedByUid", "updatedAt"]
+    },
+    "LeaveRequest": {
+      "title": "LeaveRequest",
+      "description": "Employee leave request and approval status.",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 60 },
+        "leaveType": { "type": "string", "enum": ["Annual", "Casual", "Medical"] },
+        "startDate": { "type": "string", "maxLength": 30 },
+        "endDate": { "type": "string", "maxLength": 30 },
+        "days": { "type": "number" },
+        "reason": { "type": "string", "maxLength": 400 },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "appliedOn": { "type": "string", "maxLength": 30 },
+        "decisionDate": { "type": "string", "maxLength": 30 },
+        "decisionBy": { "type": "string", "maxLength": 120 },
+        "decisionByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeId", "employeeName", "leaveType", "days", "status", "updatedAt"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Showroom floor staff attendance entry.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "maxLength": 30 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 60 },
+        "status": { "type": "string", "enum": ["Present", "Late", "Half Day", "On Leave"] },
+        "checkInTime": { "type": "string", "maxLength": 30 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "employeeId", "employeeName", "status", "updatedAt"]
+    },
+    "ServiceJobCard": {
+      "title": "ServiceJobCard",
+      "description": "Workshop and Pre-Delivery Inspection (PDI) job card.",
+      "type": "object",
+      "properties": {
+        "customerName": { "type": "string", "maxLength": 120 },
+        "customerPhone": { "type": "string", "maxLength": 30 },
+        "bikeModel": { "type": "string", "maxLength": 100 },
+        "chassisNumber": { "type": "string", "maxLength": 60 },
+        "serviceType": { "type": "string", "maxLength": 100 },
+        "technicianName": { "type": "string", "maxLength": 120 },
+        "bay": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["Scheduled", "In Progress", "Inspection Completed", "Ready for Handover"] },
+        "scheduledDate": { "type": "string", "maxLength": 30 },
+        "notes": { "type": "string", "maxLength": 400 },
+        "estimatedCostLkr": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerName", "bikeModel", "chassisNumber", "status", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Append-only security and business operation audit trail record.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 160 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "collection": { "type": "string", "maxLength": 60 },
+        "recordId": { "type": "string", "maxLength": 128 },
+        "requestId": { "type": "string", "maxLength": 128 },
+        "changes": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "actorEmail", "actorRole", "action", "collection", "recordId", "createdAt"]
+    },
+    "IdempotencyKey": {
+      "title": "IdempotencyKey",
+      "description": "Deduplication record preventing repeated payment or booking submissions.",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "operation": { "type": "string", "maxLength": 60 },
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "resultId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requestId", "operation", "actorUid", "resultId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authenticated dealership staff accounts and server-enforced RBAC roles."
+    },
+    "/staff_directory/{userId}": {
+      "schema": { "$ref": "#/entities/StaffDirectoryEntry" },
+      "description": "Non-PII staff lookup directory for consultant assignments."
+    },
+    "/staff_invites/{inviteId}": {
+      "schema": { "$ref": "#/entities/StaffInvite" },
+      "description": "Admin-issued staff invitations."
+    },
+    "/leads/{leadId}": {
+      "schema": { "$ref": "#/entities/Lead" },
+      "description": "CRM sales leads and interaction history."
+    },
+    "/bikes/{bikeId}": {
+      "schema": { "$ref": "#/entities/Bike" },
+      "description": "Physical motorcycle inventory units."
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/Booking" },
+      "description": "Customer bookings and financial totals."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentLedgerEntry" },
+      "description": "Append-only payment receipt and reversal ledger entries."
+    },
+    "/accessories/{accessoryId}": {
+      "schema": { "$ref": "#/entities/Accessory" },
+      "description": "Accessories and spare parts stock catalog."
+    },
+    "/test_rides/{testRideId}": {
+      "schema": { "$ref": "#/entities/TestRide" },
+      "description": "Scheduled test rides and feedback logs."
+    },
+    "/trade_ins/{tradeInId}": {
+      "schema": { "$ref": "#/entities/TradeIn" },
+      "description": "Trade-in valuations and approval states."
+    },
+    "/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "HR employee roster without salary fields."
+    },
+    "/employees_payroll/{employeeId}": {
+      "schema": { "$ref": "#/entities/EmployeePayroll" },
+      "description": "Restricted HR-only payroll compensation figures."
+    },
+    "/leave_requests/{leaveId}": {
+      "schema": { "$ref": "#/entities/LeaveRequest" },
+      "description": "Staff leave requests and HR/GM approvals."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily floor attendance records."
+    },
+    "/service_cards/{cardId}": {
+      "schema": { "$ref": "#/entities/ServiceJobCard" },
+      "description": "Service bay and PDI job cards."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable operational and security audit log."
+    },
+    "/idempotency_keys/{keyId}": {
+      "schema": { "$ref": "#/entities/IdempotencyKey" },
+      "description": "Duplicate-submission guard keys."
+    }
+  }
+}

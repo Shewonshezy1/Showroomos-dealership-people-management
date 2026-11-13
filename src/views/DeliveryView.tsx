@@ -22,21 +22,25 @@ import {
 
 export const DeliveryView: React.FC = () => {
   const {
+    can,
+    currentUser,
     bookings,
     updateDeliveryChecklist,
     deliverBooking,
-    employees,
     selectedBookingId,
     setSelectedBookingId,
     setCurrentView,
   } = useShowroom();
+
+  const canEditPdi = can('delivery.checklist_pdi');
+  const canExecuteHandover = can('delivery.complete_handover');
 
   const [activeBookingId, setActiveBookingId] = useState<string>(
     selectedBookingId && bookings.some(b => b.id === selectedBookingId)
       ? selectedBookingId
       : bookings.find(b => b.status === 'Confirmed')?.id || bookings[0]?.id || ''
   );
-  const [deliveredBy, setDeliveredBy] = useState('Dilantha Perera (Senior Consultant)');
+  const deliveredBy = currentUser?.fullName || 'Authorized Officer';
   const [actionMessage, setActionMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   React.useEffect(() => {
@@ -56,10 +60,10 @@ export const DeliveryView: React.FC = () => {
   }
 
   const verifiedPaid = selectedBooking.payments
-    .filter(p => p.status === 'Verified')
+    .filter(p => p.status === 'Verified' && p.entryType !== 'REVERSAL')
     .reduce((sum, p) => sum + p.amountLkr, 0);
 
-  const balance = selectedBooking.finalPriceLkr - verifiedPaid;
+  const balance = Math.max(0, selectedBooking.finalPriceLkr - verifiedPaid);
   const isDelivered = selectedBooking.status === 'Delivered';
   const isCancelled = selectedBooking.status === 'Cancelled';
 
@@ -67,6 +71,7 @@ export const DeliveryView: React.FC = () => {
   const isPaymentCleared = balance === 0;
 
   const canDeliver =
+    canExecuteHandover &&
     !isDelivered &&
     !isCancelled &&
     isPaymentCleared &&
@@ -74,34 +79,34 @@ export const DeliveryView: React.FC = () => {
     checklist.pdiCompleted;
 
   const handleToggleDocCheck = () => {
-    if (isDelivered || isCancelled) return;
+    if (!canEditPdi || isDelivered || isCancelled) return;
     updateDeliveryChecklist(selectedBooking.id, {
       documentsChecked: !checklist.documentsChecked,
     });
   };
 
   const handleTogglePdi = () => {
-    if (isDelivered || isCancelled) return;
+    if (!canEditPdi || isDelivered || isCancelled) return;
     updateDeliveryChecklist(selectedBooking.id, {
       pdiCompleted: !checklist.pdiCompleted,
     });
   };
 
   const handleToggleOrientation = () => {
-    if (isDelivered || isCancelled) return;
+    if (!canEditPdi || isDelivered || isCancelled) return;
     updateDeliveryChecklist(selectedBooking.id, {
       customerOrientationDone: !checklist.customerOrientationDone,
     });
   };
 
-  const handleExecuteDelivery = () => {
-    const res = deliverBooking(selectedBooking.id, deliveredBy);
+  const handleExecuteDelivery = async () => {
+    const res = await deliverBooking(selectedBooking.id);
     if (!res.success) {
       setActionMessage({ type: 'error', text: res.error || 'Delivery failed.' });
     } else {
       setActionMessage({
         type: 'success',
-        text: `Handover successful! Motorcycle ${selectedBooking.bikeModel} (VIN: ${selectedBooking.bikeChassis}) delivered to ${selectedBooking.customerName}.`,
+        text: `Handover completed! Motorcycle ${selectedBooking.bikeModel} (VIN: ${selectedBooking.bikeChassis}) delivered to ${selectedBooking.customerName}.`,
       });
     }
   };
@@ -418,7 +423,7 @@ export const DeliveryView: React.FC = () => {
                   className="flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#9b1c1c] hover:bg-[#b91c1c] disabled:opacity-40 disabled:cursor-not-allowed rounded-lg shadow-sm transition-colors whitespace-nowrap"
                 >
                   <Truck className="w-4 h-4" />
-                  <span>Complete Official Handover</span>
+                  <span>Complete Vehicle Handover</span>
                 </button>
               )}
             </div>

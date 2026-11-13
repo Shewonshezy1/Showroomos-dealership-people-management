@@ -3,18 +3,74 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  ReactNode,
+} from 'react';
+import {
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut,
+} from 'firebase/auth';
+import { auth, googleProvider, testFirestoreConnection } from '../firebase';
+import {
+  hasPermission,
+  canAccessView,
+  ROLE_LABELS,
+  Permission,
+} from '../auth/permissions';
+import {
+  resolveOrActivateStaffProfile,
+  subscribeAuthorizedCollections,
+  createRequestId,
+  fsCreateLead,
+  fsUpdateLead,
+  fsAddBike,
+  fsUpdateBike,
+  fsCreateBookingAtomic,
+  fsCancelBookingAtomic,
+  fsRecordPaymentAtomic,
+  fsVerifyPaymentAtomic,
+  fsReversePaymentAtomic,
+  fsDecideDiscountAtomic,
+  fsUpdateDeliveryChecklist,
+  fsDeliverBookingAtomic,
+  fsDecideLeave,
+  fsAddLeaveRequest,
+  fsMarkAttendance,
+  fsAddServiceCard,
+  fsUpdateServiceStatus,
+  fsAttachAccessoryAtomic,
+  fsRemoveAccessoryAtomic,
+  fsAddTestRide,
+  fsUpdateTestRide,
+  fsCreateTradeIn,
+  fsDecideTradeIn,
+  fsApplyTradeInAtomic,
+  fsCreateInvite,
+  fsUpdateUserRoleOrStatus,
+  fsExportDatabaseBackup,
+} from '../services/firestoreShowroomService';
 import {
   Bike,
   Booking,
   Employee,
+  EmployeeSalary,
   LeaveRequest,
   AttendanceRecord,
   Lead,
   ServiceJobCard,
-  DemoRole,
   UserRole,
   UserSession,
+  StaffInvite,
+  AuditLogEntry,
   AppView,
   PaymentRecord,
   DeliveryChecklist,
@@ -26,37 +82,43 @@ import {
   CallLog,
   LeadPriority,
 } from '../types';
-import {
-  INITIAL_BIKES,
-  INITIAL_BOOKINGS,
-  INITIAL_EMPLOYEES,
-  INITIAL_LEADS,
-  INITIAL_LEAVE_REQUESTS,
-  INITIAL_ATTENDANCE,
-  INITIAL_SERVICE_CARDS,
-  INITIAL_ACCESSORIES,
-  INITIAL_TEST_RIDES,
-  INITIAL_TRADE_INS,
-  PRESET_USERS,
-} from '../data/seedData';
-import { getTodayDDMMYYYY, generateBookingId } from '../utils/formatters';
+import { getTodayDDMMYYYY } from '../utils/formatters';
+
+export type AuthStatus =
+  | 'loading'
+  | 'unauthenticated'
+  | 'active'
+  | 'disabled'
+  | 'uninvited'
+  | 'unverified_email';
+
+export interface ActionResult {
+  success: boolean;
+  error?: string;
+  bookingId?: string;
+  leadId?: string;
+  id?: string;
+}
 
 interface ShowroomContextType {
   // Authentication & Session
+  authStatus: AuthStatus;
+  authError: string | null;
+  pendingAuthEmail: string | null;
   currentUser: UserSession | null;
-  login: (email: string, password?: string, role?: UserRole) => boolean;
-  logout: () => void;
-  switchUserRole: (role: UserRole) => void;
+  signInWithGoogle: () => Promise<boolean>;
+  signInWithEmail: (email: string, password: string) => Promise<boolean>;
+  sendPasswordReset: (email: string) => Promise<{ success: boolean; message: string }>;
+  logout: () => Promise<void>;
+  can: (permission: Permission) => boolean;
+  canView: (view: AppView) => boolean;
 
   // Navigation & Role
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
-  currentRole: DemoRole;
-  setCurrentRole: (role: DemoRole) => void;
-  demoGuideOpen: boolean;
-  setDemoGuideOpen: (open: boolean) => void;
+  currentRole: UserRole;
 
-  // Data Collections
+  // Data Collections (synced from Firestore)
   leads: Lead[];
   bikes: Bike[];
   bookings: Booking[];
@@ -67,6 +129,13 @@ interface ShowroomContextType {
   accessories: Accessory[];
   testRides: TestRideRecord[];
   tradeIns: TradeInValuation[];
+  staffUsers: UserSession[];
+  staffInvites: StaffInvite[];
+  auditLogs: AuditLogEntry[];
+
+  // Error Banner
+  operationError: string | null;
+  clearOperationError: () => void;
 
   // Reconciled Metrics
   metrics: {
@@ -86,10 +155,10 @@ interface ShowroomContextType {
   };
 
   // Lead Actions
-  addLead: (lead: Omit<Lead, 'id' | 'createdAt' | 'notes'>) => void;
-  updateLead: (id: string, updates: Partial<Lead>) => void;
-  addLeadNote: (leadId: string, noteText: string, author?: string) => void;
-  deleteLead: (id: string) => void;
+  addLead: (lead: Omit<Lead, 'id' | 'createdAt' | 'notes'>) => Promise<void>;
+  updateLead: (id: string, updates: Partial<Lead>) => Promise<void>;
+  addLeadNote: (leadId: string, noteText: string, author?: string) => Promise<void>;
+  deleteLead: (id: string) => Promise<void>;
   convertLeadToBooking: (
     leadId: string,
     bookingDetails: {
@@ -98,82 +167,93 @@ interface ShowroomContextType {
       paymentReference: string;
       customerNIC: string;
       customerAddress: string;
+      discountRequestedLkr?: number;
     }
-  ) => { success: boolean; error?: string; bookingId?: string };
+  ) => Promise<ActionResult>;
 
   // Bike Actions
-  addBike: (bike: Omit<Bike, 'id'>) => void;
-  updateBike: (id: string, updates: Partial<Bike>) => void;
+  addBike: (bike: Omit<Bike, 'id'>) => Promise<void>;
+  updateBike: (id: string, updates: Partial<Bike>) => Promise<void>;
 
-  // Booking Actions
+  // Booking & Payment Actions (Atomic + Idempotent)
   createBooking: (bookingData: {
     customerName: string;
     customerPhone: string;
     customerNIC: string;
     customerAddress: string;
-    salespersonId: string;
+    salespersonId?: string;
     bikeId: string;
     discountLkr?: number;
+    discountRequestedLkr?: number;
     initialPayment?: {
       amountLkr: number;
       type: PaymentRecord['type'];
       reference: string;
-      isVerified?: boolean;
     };
     leadId?: string;
-  }) => { success: boolean; error?: string; bookingId?: string };
-  cancelBooking: (bookingId: string, reason: string) => { success: boolean; error?: string };
+  }) => Promise<ActionResult>;
+  cancelBooking: (bookingId: string, reason: string) => Promise<ActionResult>;
   addPaymentToBooking: (
     bookingId: string,
     payment: {
       amountLkr: number;
       type: PaymentRecord['type'];
       reference: string;
-      isVerified: boolean;
     }
-  ) => { success: boolean; error?: string };
-  togglePaymentVerification: (
+  ) => Promise<ActionResult>;
+  verifyPayment: (bookingId: string, paymentId: string) => Promise<ActionResult>;
+  reversePayment: (bookingId: string, paymentId: string, reason: string) => Promise<ActionResult>;
+  decideDiscount: (
     bookingId: string,
-    paymentId: string
-  ) => { success: boolean; error?: string };
-  updateDeliveryChecklist: (bookingId: string, checklist: Partial<DeliveryChecklist>) => void;
-  deliverBooking: (bookingId: string, deliveredBy: string) => { success: boolean; error?: string };
+    approved: boolean,
+    approvedAmountLkr: number
+  ) => Promise<ActionResult>;
+  updateDeliveryChecklist: (bookingId: string, checklist: Partial<DeliveryChecklist>) => Promise<void>;
+  deliverBooking: (bookingId: string) => Promise<ActionResult>;
 
   // HR Actions
-  updateLeaveRequestStatus: (leaveId: string, status: LeaveStatus, decisionBy?: string) => void;
-  addLeaveRequest: (request: Omit<LeaveRequest, 'id' | 'status' | 'appliedOn'>) => void;
-  markAttendance: (employeeId: string, status: AttendanceStatus, notes?: string) => void;
+  updateLeaveRequestStatus: (leaveId: string, status: LeaveStatus) => Promise<ActionResult>;
+  addLeaveRequest: (request: Omit<LeaveRequest, 'id' | 'status' | 'appliedOn'>) => Promise<void>;
+  markAttendance: (employeeId: string, status: AttendanceStatus, notes?: string) => Promise<void>;
 
   // Service Job Card Actions
-  updateServiceStatus: (jobCardId: string, status: ServiceJobCard['status']) => void;
-  addServiceJobCard: (card: Omit<ServiceJobCard, 'id'>) => void;
+  updateServiceStatus: (jobCardId: string, status: ServiceJobCard['status']) => Promise<void>;
+  addServiceJobCard: (card: Omit<ServiceJobCard, 'id'>) => Promise<void>;
 
   // Accessories Actions
   addAccessoryToBooking: (
     bookingId: string,
     accessoryId: string,
     quantity?: number
-  ) => { success: boolean; error?: string };
-  removeAccessoryFromBooking: (
-    bookingId: string,
-    accessoryId: string
-  ) => { success: boolean; error?: string };
+  ) => Promise<ActionResult>;
+  removeAccessoryFromBooking: (bookingId: string, accessoryId: string) => Promise<ActionResult>;
 
   // Test Ride Actions
-  addTestRide: (record: Omit<TestRideRecord, 'id'>) => void;
+  addTestRide: (record: Omit<TestRideRecord, 'id'>) => Promise<void>;
   updateTestRideStatus: (
     id: string,
     status: TestRideRecord['status'],
     rating?: number,
     notes?: string
-  ) => void;
-  convertTestRideToLead: (testRideId: string) => { success: boolean; leadId?: string };
+  ) => Promise<void>;
+  convertTestRideToLead: (testRideId: string) => Promise<ActionResult>;
 
   // Trade-In Actions
-  addTradeInValuation: (val: Omit<TradeInValuation, 'id' | 'date'>) => { success: boolean; id: string };
-  applyTradeInToBooking: (tradeInId: string, bookingId: string) => { success: boolean; error?: string };
+  addTradeInValuation: (val: Omit<TradeInValuation, 'id' | 'date'>) => Promise<ActionResult>;
+  decideTradeIn: (tradeInId: string, approved: boolean) => Promise<ActionResult>;
+  applyTradeInToBooking: (tradeInId: string, bookingId: string) => Promise<ActionResult>;
 
-  // Notification Simulator
+  // Admin & Identity Actions
+  inviteStaff: (
+    invite: Omit<StaffInvite, 'id' | 'status' | 'invitedByUid' | 'createdAt'>
+  ) => Promise<ActionResult>;
+  updateStaffRoleOrStatus: (
+    targetUid: string,
+    updates: { role?: UserRole; disabled?: boolean }
+  ) => Promise<ActionResult>;
+  exportDatabaseBackup: () => Promise<Record<string, unknown[]> | null>;
+
+  // Notification Preview Modal (explicitly simulated)
   notificationModal: {
     isOpen: boolean;
     title: string;
@@ -193,17 +273,15 @@ interface ShowroomContextType {
   }) => void;
   closeNotificationModal: () => void;
 
-  // Global Actions
-  resetDemoData: () => void;
+  // UI Selection States
   selectedLeadId: string | null;
   setSelectedLeadId: (id: string | null) => void;
-  // CRM Enhancements
   crmViewMode: 'kanban' | 'list';
   setCrmViewMode: (mode: 'kanban' | 'list') => void;
-  addCallLogToLead: (leadId: string, call: Omit<CallLog, 'id' | 'date'>) => void;
-  updateLeadPriority: (leadId: string, priority: LeadPriority) => void;
-  markLeadLost: (leadId: string, reason: string) => void;
-  reassignLead: (leadId: string, salespersonId: string, salespersonName: string) => void;
+  addCallLogToLead: (leadId: string, call: Omit<CallLog, 'id' | 'date'>) => Promise<void>;
+  updateLeadPriority: (leadId: string, priority: LeadPriority) => Promise<void>;
+  markLeadLost: (leadId: string, reason: string) => Promise<void>;
+  reassignLead: (leadId: string, salespersonId: string, salespersonName: string) => Promise<void>;
   proformaQuoteLeadId: string | null;
   setProformaQuoteLeadId: (id: string | null) => void;
 
@@ -215,175 +293,46 @@ interface ShowroomContextType {
   setPrintableBookingId: (id: string | null) => void;
 }
 
-const STORAGE_KEY = 'showroom_os_re_demo_v1';
+const ZERO_SALARY: EmployeeSalary = {
+  basicLkr: 0,
+  showroomAllowanceLkr: 0,
+  salesIncentiveLkr: 0,
+  illustrativeDeductionsLkr: 0,
+};
 
 const ShowroomContext = createContext<ShowroomContextType | undefined>(undefined);
 
 export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('loading');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [pendingAuthEmail, setPendingAuthEmail] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
-  const [currentRole, setCurrentRole] = useState<DemoRole>('management');
-  const [demoGuideOpen, setDemoGuideOpen] = useState<boolean>(false);
-
-  // Authentication State
-  const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_user`);
-      return saved ? JSON.parse(saved) : PRESET_USERS[0];
-    } catch {
-      return PRESET_USERS[0];
-    }
-  });
-
   const [crmViewMode, setCrmViewMode] = useState<'kanban' | 'list'>('list');
-  const [proformaQuoteLeadId, setProformaQuoteLeadId] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
 
-  const login = (email: string, password = '', role?: UserRole): boolean => {
-    let matched = PRESET_USERS.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (!matched && role) {
-      matched = PRESET_USERS.find(u => u.role === role);
-    }
-    if (!matched) {
-      matched = {
-        id: `usr-${Date.now()}`,
-        fullName: email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase()),
-        email,
-        role: role || 'sales',
-        designation: role === 'management' ? 'General Manager' : 'Sales Consultant',
-        department: 'Showroom Operations',
-        branch: 'Colombo Flagship Hub',
-      };
-    }
-    setCurrentUser(matched);
-    setCurrentRole(matched.role);
-    try {
-      localStorage.setItem(`${STORAGE_KEY}_user`, JSON.stringify(matched));
-    } catch {}
-    return true;
-  };
+  // Firestore synced collections (start empty — never pre-populated from localStorage or mock arrays)
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [bikes, setBikes] = useState<Bike[]>([]);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [rawEmployees, setRawEmployees] = useState<Employee[]>([]);
+  const [payrollsMap, setPayrollsMap] = useState<Record<string, EmployeeSalary>>({});
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+  const [serviceJobCards, setServiceJobCards] = useState<ServiceJobCard[]>([]);
+  const [accessories, setAccessories] = useState<Accessory[]>([]);
+  const [testRides, setTestRides] = useState<TestRideRecord[]>([]);
+  const [tradeIns, setTradeIns] = useState<TradeInValuation[]>([]);
+  const [staffUsers, setStaffUsers] = useState<UserSession[]>([]);
+  const [staffInvites, setStaffInvites] = useState<StaffInvite[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
 
-  const logout = () => {
-    setCurrentUser(null);
-    try {
-      localStorage.removeItem(`${STORAGE_KEY}_user`);
-    } catch {}
-  };
-
-  const switchUserRole = (role: UserRole) => {
-    const matched = PRESET_USERS.find(u => u.role === role);
-    if (matched) {
-      setCurrentUser(matched);
-      setCurrentRole(role);
-      try {
-        localStorage.setItem(`${STORAGE_KEY}_user`, JSON.stringify(matched));
-      } catch {}
-    } else {
-      setCurrentRole(role);
-      if (currentUser) {
-        const updated = { ...currentUser, role };
-        setCurrentUser(updated);
-        try {
-          localStorage.setItem(`${STORAGE_KEY}_user`, JSON.stringify(updated));
-        } catch {}
-      }
-    }
-  };
-
+  // Modal / Drawer selection states
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [proformaQuoteLeadId, setProformaQuoteLeadId] = useState<string | null>(null);
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [selectedBikeId, setSelectedBikeId] = useState<string | null>(null);
   const [printableBookingId, setPrintableBookingId] = useState<string | null>(null);
-
-  // Core Data States
-  const [leads, setLeads] = useState<Lead[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_leads`);
-      return saved ? JSON.parse(saved) : INITIAL_LEADS;
-    } catch {
-      return INITIAL_LEADS;
-    }
-  });
-
-  const [bikes, setBikes] = useState<Bike[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_bikes`);
-      return saved ? JSON.parse(saved) : INITIAL_BIKES;
-    } catch {
-      return INITIAL_BIKES;
-    }
-  });
-
-  const [bookings, setBookings] = useState<Booking[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_bookings`);
-      return saved ? JSON.parse(saved) : INITIAL_BOOKINGS;
-    } catch {
-      return INITIAL_BOOKINGS;
-    }
-  });
-
-  const [employees, setEmployees] = useState<Employee[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_employees`);
-      return saved ? JSON.parse(saved) : INITIAL_EMPLOYEES;
-    } catch {
-      return INITIAL_EMPLOYEES;
-    }
-  });
-
-  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_leaves`);
-      return saved ? JSON.parse(saved) : INITIAL_LEAVE_REQUESTS;
-    } catch {
-      return INITIAL_LEAVE_REQUESTS;
-    }
-  });
-
-  const [attendance, setAttendance] = useState<AttendanceRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_attendance`);
-      return saved ? JSON.parse(saved) : INITIAL_ATTENDANCE;
-    } catch {
-      return INITIAL_ATTENDANCE;
-    }
-  });
-
-  const [serviceJobCards, setServiceJobCards] = useState<ServiceJobCard[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_service`);
-      return saved ? JSON.parse(saved) : INITIAL_SERVICE_CARDS;
-    } catch {
-      return INITIAL_SERVICE_CARDS;
-    }
-  });
-
-  const [accessories, setAccessories] = useState<Accessory[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_accessories`);
-      return saved ? JSON.parse(saved) : INITIAL_ACCESSORIES;
-    } catch {
-      return INITIAL_ACCESSORIES;
-    }
-  });
-
-  const [testRides, setTestRides] = useState<TestRideRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_testrides`);
-      return saved ? JSON.parse(saved) : INITIAL_TEST_RIDES;
-    } catch {
-      return INITIAL_TEST_RIDES;
-    }
-  });
-
-  const [tradeIns, setTradeIns] = useState<TradeInValuation[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${STORAGE_KEY}_tradeins`);
-      return saved ? JSON.parse(saved) : INITIAL_TRADE_INS;
-    } catch {
-      return INITIAL_TRADE_INS;
-    }
-  });
-
   const [notificationModal, setNotificationModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -393,6 +342,859 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
     channel: 'SMS' | 'WhatsApp';
     purpose: string;
   } | null>(null);
+
+  const clearAllInMemoryData = useCallback(() => {
+    setLeads([]);
+    setBikes([]);
+    setBookings([]);
+    setRawEmployees([]);
+    setPayrollsMap({});
+    setLeaveRequests([]);
+    setAttendance([]);
+    setServiceJobCards([]);
+    setAccessories([]);
+    setTestRides([]);
+    setTradeIns([]);
+    setStaffUsers([]);
+    setStaffInvites([]);
+    setAuditLogs([]);
+    setSelectedLeadId(null);
+    setSelectedBookingId(null);
+    setSelectedBikeId(null);
+    setPrintableBookingId(null);
+    setProformaQuoteLeadId(null);
+    setNotificationModal(null);
+  }, []);
+
+  // Firebase Auth listener + authorized collection subscriptions
+  useEffect(() => {
+    void testFirestoreConnection();
+    let unsubCollections: (() => void) | null = null;
+    let activeRun = true;
+
+    const unsubAuth = onAuthStateChanged(auth, async fbUser => {
+      if (unsubCollections) {
+        unsubCollections();
+        unsubCollections = null;
+      }
+
+      if (!fbUser) {
+        if (!activeRun) return;
+        setCurrentUser(null);
+        setPendingAuthEmail(null);
+        clearAllInMemoryData();
+        setAuthStatus('unauthenticated');
+        return;
+      }
+
+      setAuthStatus('loading');
+      setPendingAuthEmail(fbUser.email || null);
+
+      const resolution = await resolveOrActivateStaffProfile(fbUser);
+      if (!activeRun) return;
+
+      if (resolution.status !== 'active') {
+        setCurrentUser(null);
+        clearAllInMemoryData();
+        setAuthStatus(resolution.status);
+        return;
+      }
+
+      const profile: UserSession = {
+        ...resolution.profile,
+        roleLabel: ROLE_LABELS[resolution.profile.role] || resolution.profile.designation,
+      };
+      setCurrentUser(profile);
+      setAuthStatus('active');
+      setAuthError(null);
+
+      if (!canAccessView(profile.role, currentView)) {
+        setCurrentView('dashboard');
+      }
+
+      unsubCollections = subscribeAuthorizedCollections(profile, {
+        onLeads: setLeads,
+        onBikes: setBikes,
+        onBookings: setBookings,
+        onEmployees: setRawEmployees,
+        onPayrolls: setPayrollsMap,
+        onLeaves: setLeaveRequests,
+        onAttendance: setAttendance,
+        onServiceCards: setServiceJobCards,
+        onAccessories: setAccessories,
+        onTestRides: setTestRides,
+        onTradeIns: setTradeIns,
+        onUsers: setStaffUsers,
+        onInvites: setStaffInvites,
+        onAuditLogs: setAuditLogs,
+        onPermissionRevoked: () => {
+          setCurrentUser(null);
+          clearAllInMemoryData();
+          setAuthStatus('disabled');
+        },
+      });
+    });
+
+    return () => {
+      activeRun = false;
+      if (unsubCollections) unsubCollections();
+      unsubAuth();
+    };
+  }, [clearAllInMemoryData]);
+
+  // Combine employees with confidential payroll ONLY for HR role
+  const employees = useMemo<Employee[]>(() => {
+    const canReadPayroll = hasPermission(currentUser?.role, 'hr.payroll.read');
+    return rawEmployees.map(emp => ({
+      ...emp,
+      salary: canReadPayroll && payrollsMap[emp.id] ? payrollsMap[emp.id] : ZERO_SALARY,
+    }));
+  }, [rawEmployees, payrollsMap, currentUser?.role]);
+
+  const signInWithGoogle = async (): Promise<boolean> => {
+    setAuthError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
+      setAuthError(msg);
+      return false;
+    }
+  };
+
+  const signInWithEmail = async (email: string, password: string): Promise<boolean> => {
+    setAuthError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      return true;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/operation-not-allowed' || code === 'auth/configuration-not-found') {
+        setAuthError(
+          'Email/Password provider is not enabled in Firebase Authentication Console yet. Use Company Google Sign-In or enable Email/Password in Firebase Console.'
+        );
+      } else if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        setAuthError('Invalid staff email or password.');
+      } else if (code === 'auth/user-disabled') {
+        setAuthError('This staff account has been disabled in Firebase Authentication.');
+      } else {
+        setAuthError(err instanceof Error ? err.message : 'Sign in failed.');
+      }
+      return false;
+    }
+  };
+
+  const sendPasswordReset = async (email: string): Promise<{ success: boolean; message: string }> => {
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      return {
+        success: true,
+        message: 'If an email/password account exists for that address, a reset link has been sent.',
+      };
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/operation-not-allowed') {
+        return {
+          success: false,
+          message: 'Email/Password sign-in is not currently enabled in Firebase Console.',
+        };
+      }
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : 'Password reset request failed.',
+      };
+    }
+  };
+
+  const logout = async (): Promise<void> => {
+    clearAllInMemoryData();
+    setCurrentUser(null);
+    setAuthStatus('unauthenticated');
+    setCurrentView('dashboard');
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Sign out error:', err);
+    }
+  };
+
+  const can = useCallback(
+    (permission: Permission) => hasPermission(currentUser?.role, permission),
+    [currentUser?.role]
+  );
+
+  const canView = useCallback(
+    (view: AppView) => canAccessView(currentUser?.role, view),
+    [currentUser?.role]
+  );
+
+  const clearOperationError = () => setOperationError(null);
+
+  const guardUserAndPerm = (permission: Permission, label: string): UserSession => {
+    if (!currentUser || currentUser.disabled) {
+      const msg = 'Authentication required: Active staff session not found.';
+      setOperationError(msg);
+      throw new Error(msg);
+    }
+    if (!hasPermission(currentUser.role, permission)) {
+      const msg = `Access Denied: Your role (${ROLE_LABELS[currentUser.role]}) does not have permission to ${label}.`;
+      setOperationError(msg);
+      throw new Error(msg);
+    }
+    return currentUser;
+  };
+
+  // Derived Reconciled Metrics
+  const metrics = useMemo(() => {
+    const activeLeadsCount = leads.filter(l => l.status !== 'Closed' && l.status !== 'Lost').length;
+    const availableBikesCount = bikes.filter(b => b.status === 'Available').length;
+    const confirmedBookingsCount = bookings.filter(b => b.status === 'Confirmed').length;
+    const deliveredCount = bookings.filter(b => b.status === 'Delivered').length;
+
+    let verifiedCollectionsLkr = 0;
+    let unverifiedPaymentsLkr = 0;
+
+    bookings.forEach(booking => {
+      if (booking.status !== 'Cancelled') {
+        booking.payments.forEach(p => {
+          if (p.entryType === 'REVERSAL' || p.status === 'Reversed') return;
+          if (p.status === 'Verified') {
+            verifiedCollectionsLkr += p.amountLkr;
+          } else {
+            unverifiedPaymentsLkr += p.amountLkr;
+          }
+        });
+      }
+    });
+
+    const pendingLeaveRequestsCount = leaveRequests.filter(l => l.status === 'Pending').length;
+    const totalStockValueLkr = bikes.reduce((sum, b) => sum + (b.priceLkr || 0), 0);
+    const totalPipelineValueLkr = bookings
+      .filter(b => b.status === 'Confirmed')
+      .reduce((sum, b) => sum + b.finalPriceLkr, 0);
+
+    const readyForDeliveryCount = bookings.filter(b => {
+      if (b.status !== 'Confirmed') return false;
+      const verifiedPaid = b.payments
+        .filter(p => p.status === 'Verified' && p.entryType !== 'REVERSAL')
+        .reduce((sum, p) => sum + p.amountLkr, 0);
+      const balance = Math.max(0, b.finalPriceLkr - verifiedPaid);
+      return (
+        balance === 0 &&
+        b.deliveryChecklist.paymentVerified &&
+        b.deliveryChecklist.documentsChecked &&
+        b.deliveryChecklist.pdiCompleted
+      );
+    }).length;
+
+    const totalAccessoriesStockValueLkr = accessories.reduce(
+      (sum, a) => sum + a.priceLkr * a.stockQuantity,
+      0
+    );
+    const scheduledTestRidesCount = testRides.filter(tr => tr.status === 'Scheduled').length;
+    const activeTradeInsCount = tradeIns.filter(
+      ti => !ti.appliedBookingId && ti.status !== 'Rejected'
+    ).length;
+
+    return {
+      activeLeadsCount,
+      availableBikesCount,
+      confirmedBookingsCount,
+      deliveredCount,
+      verifiedCollectionsLkr,
+      unverifiedPaymentsLkr,
+      pendingLeaveRequestsCount,
+      totalStockValueLkr,
+      totalPipelineValueLkr,
+      readyForDeliveryCount,
+      totalAccessoriesStockValueLkr,
+      scheduledTestRidesCount,
+      activeTradeInsCount,
+    };
+  }, [leads, bikes, bookings, leaveRequests, accessories, testRides, tradeIns]);
+
+  // Lead Actions
+  const addLead = async (leadData: Omit<Lead, 'id' | 'createdAt' | 'notes'>) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'create leads');
+      await fsCreateLead(actor, leadData);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to create lead.');
+    }
+  };
+
+  const updateLead = async (id: string, updates: Partial<Lead>) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'update leads');
+      await fsUpdateLead(actor, id, updates);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to update lead.');
+    }
+  };
+
+  const addLeadNote = async (leadId: string, noteText: string, author?: string) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'add lead notes');
+      const target = leads.find(l => l.id === leadId);
+      if (!target) return;
+      const newNote = {
+        id: `note-${Date.now()}`,
+        date: getTodayDDMMYYYY(),
+        author: author || actor.fullName,
+        text: noteText,
+      };
+      await fsUpdateLead(actor, leadId, { notes: [newNote, ...(target.notes || [])] });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to add note.');
+    }
+  };
+
+  const deleteLead = async (id: string) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'close leads');
+      await fsUpdateLead(actor, id, { status: 'Lost', lostReason: 'Archived by staff' });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to archive lead.');
+    }
+  };
+
+  const addCallLogToLead = async (leadId: string, call: Omit<CallLog, 'id' | 'date'>) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'log calls');
+      const target = leads.find(l => l.id === leadId);
+      if (!target) return;
+      const newCallLog: CallLog = {
+        ...call,
+        id: `cl-${Date.now()}`,
+        date: `${getTodayDDMMYYYY()} 11:30`,
+      };
+      await fsUpdateLead(actor, leadId, {
+        callLogs: [newCallLog, ...(target.callLogs || [])],
+        notes: [
+          {
+            id: `note-${Date.now()}`,
+            date: getTodayDDMMYYYY(),
+            author: call.caller || actor.fullName,
+            text: `Call Logged (${call.outcome}): ${call.notes}`,
+          },
+          ...(target.notes || []),
+        ],
+      });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to log call.');
+    }
+  };
+
+  const updateLeadPriority = async (leadId: string, priority: LeadPriority) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'update lead priority');
+      await fsUpdateLead(actor, leadId, { priority });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to update priority.');
+    }
+  };
+
+  const markLeadLost = async (leadId: string, reason: string) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'mark lead lost');
+      const target = leads.find(l => l.id === leadId);
+      await fsUpdateLead(actor, leadId, {
+        status: 'Lost',
+        lostReason: reason,
+        notes: [
+          {
+            id: `note-${Date.now()}`,
+            date: getTodayDDMMYYYY(),
+            author: actor.fullName,
+            text: `Lead marked as Lost. Reason: ${reason}`,
+          },
+          ...(target?.notes || []),
+        ],
+      });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to mark lead lost.');
+    }
+  };
+
+  const reassignLead = async (leadId: string, salespersonId: string, salespersonName: string) => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'reassign leads');
+      const target = leads.find(l => l.id === leadId);
+      await fsUpdateLead(actor, leadId, {
+        salespersonId,
+        salespersonName,
+        notes: [
+          {
+            id: `note-${Date.now()}`,
+            date: getTodayDDMMYYYY(),
+            author: actor.fullName,
+            text: `Lead reassigned to ${salespersonName}.`,
+          },
+          ...(target?.notes || []),
+        ],
+      });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to reassign lead.');
+    }
+  };
+
+  // Bike Actions
+  const addBike = async (bikeData: Omit<Bike, 'id'>) => {
+    try {
+      const actor = guardUserAndPerm('inventory.bikes.write', 'add showroom motorcycles');
+      await fsAddBike(actor, bikeData);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to add bike.');
+    }
+  };
+
+  const updateBike = async (id: string, updates: Partial<Bike>) => {
+    try {
+      const actor = guardUserAndPerm('inventory.bikes.write', 'update showroom motorcycles');
+      await fsUpdateBike(actor, id, updates);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to update bike.');
+    }
+  };
+
+  // Booking Actions
+  const createBooking = async (bookingData: {
+    customerName: string;
+    customerPhone: string;
+    customerNIC: string;
+    customerAddress: string;
+    salespersonId?: string;
+    bikeId: string;
+    discountLkr?: number;
+    discountRequestedLkr?: number;
+    initialPayment?: {
+      amountLkr: number;
+      type: PaymentRecord['type'];
+      reference: string;
+    };
+    leadId?: string;
+  }): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('bookings.create', 'create bookings');
+      const discountRequestedLkr =
+        bookingData.discountRequestedLkr ?? bookingData.discountLkr ?? 0;
+
+      const { bookingId } = await fsCreateBookingAtomic(actor, {
+        requestId: createRequestId('bk'),
+        customerName: bookingData.customerName,
+        customerPhone: bookingData.customerPhone,
+        customerNIC: bookingData.customerNIC,
+        customerAddress: bookingData.customerAddress,
+        bikeId: bookingData.bikeId,
+        discountRequestedLkr,
+        leadId: bookingData.leadId,
+      });
+
+      // If an initial payment receipt was supplied, record it as PENDING VERIFICATION (never auto-verified!)
+      if (bookingData.initialPayment && bookingData.initialPayment.amountLkr > 0) {
+        await fsRecordPaymentAtomic(actor, {
+          bookingId,
+          requestId: createRequestId('pay'),
+          amountLkr: bookingData.initialPayment.amountLkr,
+          type: bookingData.initialPayment.type,
+          reference: bookingData.initialPayment.reference || 'Initial Booking Receipt',
+        });
+      }
+
+      return { success: true, bookingId };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to create booking.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const convertLeadToBooking = async (
+    leadId: string,
+    details: {
+      bikeId: string;
+      advanceAmountLkr: number;
+      paymentReference: string;
+      customerNIC: string;
+      customerAddress: string;
+      discountRequestedLkr?: number;
+    }
+  ): Promise<ActionResult> => {
+    const lead = leads.find(l => l.id === leadId);
+    if (!lead) return { success: false, error: 'Lead not found.' };
+
+    return createBooking({
+      customerName: lead.customerName,
+      customerPhone: lead.phone,
+      customerNIC: details.customerNIC || '1990****2031',
+      customerAddress: details.customerAddress || `${lead.city}, Sri Lanka`,
+      salespersonId: lead.salespersonId,
+      bikeId: details.bikeId,
+      discountRequestedLkr: details.discountRequestedLkr,
+      leadId,
+      initialPayment:
+        details.advanceAmountLkr > 0
+          ? {
+              amountLkr: details.advanceAmountLkr,
+              type: 'Booking Advance',
+              reference: details.paymentReference || 'Initial Deposit Receipt',
+            }
+          : undefined,
+    });
+  };
+
+  const cancelBooking = async (bookingId: string, reason: string): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('bookings.cancel', 'cancel bookings');
+      await fsCancelBookingAtomic(actor, bookingId, reason);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Cancellation failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const addPaymentToBooking = async (
+    bookingId: string,
+    payment: {
+      amountLkr: number;
+      type: PaymentRecord['type'];
+      reference: string;
+    }
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('payments.record_unverified', 'record customer payment receipts');
+      await fsRecordPaymentAtomic(actor, {
+        bookingId,
+        requestId: createRequestId('pay'),
+        amountLkr: payment.amountLkr,
+        type: payment.type,
+        reference: payment.reference,
+      });
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to record payment.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const verifyPayment = async (bookingId: string, paymentId: string): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('payments.verify', 'verify customer payments');
+      await fsVerifyPaymentAtomic(actor, bookingId, paymentId);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Payment verification failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const reversePayment = async (
+    bookingId: string,
+    paymentId: string,
+    reason: string
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('payments.reverse', 'post payment reversals');
+      await fsReversePaymentAtomic(actor, bookingId, paymentId, reason, createRequestId('rev'));
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Payment reversal failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const decideDiscount = async (
+    bookingId: string,
+    approved: boolean,
+    approvedAmountLkr: number
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('discounts.approve', 'approve or reject booking discounts');
+      await fsDecideDiscountAtomic(actor, bookingId, approved, approvedAmountLkr);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Discount decision failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const updateDeliveryChecklist = async (
+    bookingId: string,
+    checklist: Partial<DeliveryChecklist>
+  ) => {
+    try {
+      const actor = guardUserAndPerm('delivery.checklist_pdi', 'update PDI checklists');
+      await fsUpdateDeliveryChecklist(actor, bookingId, checklist);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Checklist update failed.');
+    }
+  };
+
+  const deliverBooking = async (bookingId: string): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('delivery.complete_handover', 'complete vehicle handover');
+      await fsDeliverBookingAtomic(actor, bookingId);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Delivery handover failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  // HR Actions
+  const updateLeaveRequestStatus = async (
+    leaveId: string,
+    status: LeaveStatus
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('hr.leaves.decide', 'approve or reject leave requests');
+      await fsDecideLeave(actor, leaveId, status);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Leave decision failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const addLeaveRequest = async (request: Omit<LeaveRequest, 'id' | 'status' | 'appliedOn'>) => {
+    try {
+      if (!currentUser) throw new Error('Sign in required.');
+      await fsAddLeaveRequest(currentUser, request);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to submit leave request.');
+    }
+  };
+
+  const markAttendance = async (
+    employeeId: string,
+    status: AttendanceStatus,
+    notes = ''
+  ) => {
+    try {
+      const actor = guardUserAndPerm('hr.attendance.write', 'record attendance');
+      const emp = employees.find(e => e.id === employeeId);
+      await fsMarkAttendance(actor, {
+        date: getTodayDDMMYYYY(),
+        employeeId,
+        employeeName: emp?.fullName || 'Employee',
+        department: emp?.department || 'Showroom Operations',
+        status,
+        checkInTime: '08:30 AM',
+        notes,
+      });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Attendance update failed.');
+    }
+  };
+
+  // Service Actions
+  const updateServiceStatus = async (
+    jobCardId: string,
+    status: ServiceJobCard['status']
+  ) => {
+    try {
+      const actor = guardUserAndPerm('service.write', 'update service job cards');
+      await fsUpdateServiceStatus(actor, jobCardId, status);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Service status update failed.');
+    }
+  };
+
+  const addServiceJobCard = async (card: Omit<ServiceJobCard, 'id'>) => {
+    try {
+      const actor = guardUserAndPerm('service.write', 'create service job cards');
+      await fsAddServiceCard(actor, card);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Service job card creation failed.');
+    }
+  };
+
+  // Accessories Actions
+  const addAccessoryToBooking = async (
+    bookingId: string,
+    accessoryId: string,
+    quantity = 1
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('bookings.attach_accessories', 'attach accessories to bookings');
+      await fsAttachAccessoryAtomic(actor, bookingId, accessoryId, quantity);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Accessory reservation failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const removeAccessoryFromBooking = async (
+    bookingId: string,
+    accessoryId: string
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('bookings.attach_accessories', 'remove accessories from bookings');
+      await fsRemoveAccessoryAtomic(actor, bookingId, accessoryId);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Accessory removal failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  // Test Ride Actions
+  const addTestRide = async (record: Omit<TestRideRecord, 'id'>) => {
+    try {
+      const actor = guardUserAndPerm('testrides.write', 'schedule test rides');
+      await fsAddTestRide(actor, record);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to schedule test ride.');
+    }
+  };
+
+  const updateTestRideStatus = async (
+    id: string,
+    status: TestRideRecord['status'],
+    feedbackRating?: number,
+    feedbackNotes?: string
+  ) => {
+    try {
+      const actor = guardUserAndPerm('testrides.write', 'update test ride records');
+      await fsUpdateTestRide(actor, id, {
+        status,
+        ...(feedbackRating !== undefined ? { feedbackRating } : {}),
+        ...(feedbackNotes !== undefined ? { feedbackNotes } : {}),
+      });
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Failed to update test ride.');
+    }
+  };
+
+  const convertTestRideToLead = async (testRideId: string): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('crm.write', 'convert test ride to lead');
+      const tr = testRides.find(r => r.id === testRideId);
+      if (!tr) return { success: false, error: 'Test ride record not found.' };
+      const leadId = await fsCreateLead(actor, {
+        customerName: tr.customerName,
+        phone: tr.customerPhone,
+        email: `${tr.customerName.toLowerCase().replace(/\s+/g, '.')}@client.lk`,
+        city: 'Colombo',
+        modelInterest: tr.model,
+        colorPreference: 'Standard',
+        salespersonId: actor.uid,
+        salespersonName: tr.salespersonName || actor.fullName,
+        source: 'Test Ride Experience',
+        status: 'Test Ride',
+        nextFollowUpDate: getTodayDDMMYYYY(),
+      });
+      await fsUpdateTestRide(actor, testRideId, { convertedToLeadId: leadId });
+      return { success: true, leadId };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to convert test ride to lead.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  // Trade-In Actions
+  const addTradeInValuation = async (
+    val: Omit<TradeInValuation, 'id' | 'date'>
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('tradein.create_estimate', 'create trade-in valuations');
+      const id = await fsCreateTradeIn(actor, val);
+      return { success: true, id };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save trade-in valuation.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const decideTradeIn = async (tradeInId: string, approved: boolean): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('tradein.approve', 'approve or reject trade-in credits');
+      await fsDecideTradeIn(actor, tradeInId, approved);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Trade-in approval decision failed.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const applyTradeInToBooking = async (
+    tradeInId: string,
+    bookingId: string
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('tradein.approve', 'apply approved trade-in credits to bookings');
+      await fsApplyTradeInAtomic(actor, tradeInId, bookingId);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to apply trade-in credit.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  // Admin & Identity Actions
+  const inviteStaff = async (
+    invite: Omit<StaffInvite, 'id' | 'status' | 'invitedByUid' | 'createdAt'>
+  ): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('users.manage_invites', 'invite staff users');
+      await fsCreateInvite(actor, invite);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to invite staff member.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const updateStaffRoleOrStatus = async (
+    targetUid: string,
+    updates: { role?: UserRole; disabled?: boolean }
+  ): Promise<ActionResult> => {
+    try {
+      if (updates.role !== undefined) {
+        guardUserAndPerm('users.assign_role', 'assign staff roles');
+      }
+      if (updates.disabled !== undefined) {
+        guardUserAndPerm('users.toggle_disable', 'disable or enable staff accounts');
+      }
+      if (!currentUser) throw new Error('Not signed in.');
+      if (targetUid === currentUser.uid && updates.disabled) {
+        throw new Error('You cannot disable your own active administrator session.');
+      }
+      await fsUpdateUserRoleOrStatus(currentUser, targetUid, updates);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to update staff account.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const exportDatabaseBackup = async (): Promise<Record<string, unknown[]> | null> => {
+    try {
+      const actor = guardUserAndPerm('backup.export', 'export database backup snapshots');
+      return await fsExportDatabaseBackup(actor);
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : 'Backup export failed.');
+      return null;
+    }
+  };
 
   const openNotificationModal = (payload: {
     title: string;
@@ -413,983 +1215,24 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
     });
   };
 
-  const closeNotificationModal = () => {
-    setNotificationModal(null);
-  };
-
-  // Persist to LocalStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY}_leads`, JSON.stringify(leads));
-      localStorage.setItem(`${STORAGE_KEY}_bikes`, JSON.stringify(bikes));
-      localStorage.setItem(`${STORAGE_KEY}_bookings`, JSON.stringify(bookings));
-      localStorage.setItem(`${STORAGE_KEY}_employees`, JSON.stringify(employees));
-      localStorage.setItem(`${STORAGE_KEY}_leaves`, JSON.stringify(leaveRequests));
-      localStorage.setItem(`${STORAGE_KEY}_attendance`, JSON.stringify(attendance));
-      localStorage.setItem(`${STORAGE_KEY}_service`, JSON.stringify(serviceJobCards));
-      localStorage.setItem(`${STORAGE_KEY}_accessories`, JSON.stringify(accessories));
-      localStorage.setItem(`${STORAGE_KEY}_testrides`, JSON.stringify(testRides));
-      localStorage.setItem(`${STORAGE_KEY}_tradeins`, JSON.stringify(tradeIns));
-    } catch (e) {
-      console.warn('LocalStorage save error (using memory state):', e);
-    }
-  }, [leads, bikes, bookings, employees, leaveRequests, attendance, serviceJobCards, accessories, testRides, tradeIns]);
-
-  // Derived Reconciled Metrics
-  const metrics = useMemo(() => {
-    const activeLeadsCount = leads.filter(l => l.status !== 'Closed' && l.status !== 'Lost').length;
-    const availableBikesCount = bikes.filter(b => b.status === 'Available').length;
-    const confirmedBookingsCount = bookings.filter(b => b.status === 'Confirmed').length;
-    const deliveredCount = bookings.filter(b => b.status === 'Delivered').length;
-
-    let verifiedCollectionsLkr = 0;
-    let unverifiedPaymentsLkr = 0;
-
-    bookings.forEach(booking => {
-      if (booking.status !== 'Cancelled') {
-        booking.payments.forEach(p => {
-          if (p.status === 'Verified') {
-            verifiedCollectionsLkr += p.amountLkr;
-          } else {
-            unverifiedPaymentsLkr += p.amountLkr;
-          }
-        });
-      }
-    });
-
-    const pendingLeaveRequestsCount = leaveRequests.filter(l => l.status === 'Pending').length;
-    const totalStockValueLkr = bikes.reduce((sum, b) => sum + (b.priceLkr || 0), 0);
-    const totalPipelineValueLkr = bookings
-      .filter(b => b.status === 'Confirmed')
-      .reduce((sum, b) => sum + b.finalPriceLkr, 0);
-
-    const readyForDeliveryCount = bookings.filter(b => {
-      if (b.status !== 'Confirmed') return false;
-      const verifiedPaid = b.payments
-        .filter(p => p.status === 'Verified')
-        .reduce((sum, p) => sum + p.amountLkr, 0);
-      const balance = b.finalPriceLkr - verifiedPaid;
-      return (
-        balance === 0 &&
-        b.deliveryChecklist.paymentVerified &&
-        b.deliveryChecklist.documentsChecked &&
-        b.deliveryChecklist.pdiCompleted
-      );
-    }).length;
-
-    const totalAccessoriesStockValueLkr = accessories.reduce(
-      (sum, a) => sum + a.priceLkr * a.stockQuantity,
-      0
-    );
-    const scheduledTestRidesCount = testRides.filter(tr => tr.status === 'Scheduled').length;
-    const activeTradeInsCount = tradeIns.filter(ti => !ti.appliedBookingId).length;
-
-    return {
-      activeLeadsCount,
-      availableBikesCount,
-      confirmedBookingsCount,
-      deliveredCount,
-      verifiedCollectionsLkr,
-      unverifiedPaymentsLkr,
-      pendingLeaveRequestsCount,
-      totalStockValueLkr,
-      totalPipelineValueLkr,
-      readyForDeliveryCount,
-      totalAccessoriesStockValueLkr,
-      scheduledTestRidesCount,
-      activeTradeInsCount,
-    };
-  }, [leads, bikes, bookings, leaveRequests, accessories, testRides, tradeIns]);
-
-  // Lead Actions
-  const addLead = (leadData: Omit<Lead, 'id' | 'createdAt' | 'notes'>) => {
-    const newLead: Lead = {
-      ...leadData,
-      id: `lead-${Date.now()}`,
-      createdAt: getTodayDDMMYYYY(),
-      notes: [
-        {
-          id: `note-${Date.now()}`,
-          date: getTodayDDMMYYYY(),
-          author: leadData.salespersonName,
-          text: `Inquiry registered for ${leadData.modelInterest} (${leadData.source}).`,
-        },
-      ],
-    };
-    setLeads(prev => [newLead, ...prev]);
-  };
-
-  const updateLead = (id: string, updates: Partial<Lead>) => {
-    setLeads(prev => prev.map(l => (l.id === id ? { ...l, ...updates } : l)));
-  };
-
-  const addLeadNote = (leadId: string, noteText: string, author?: string) => {
-    setLeads(prev =>
-      prev.map(l => {
-        if (l.id !== leadId) return l;
-        const newNote = {
-          id: `note-${Date.now()}`,
-          date: getTodayDDMMYYYY(),
-          author: author || l.salespersonName,
-          text: noteText,
-        };
-        return {
-          ...l,
-          notes: [newNote, ...l.notes],
-        };
-      })
-    );
-  };
-
-  const deleteLead = (id: string) => {
-    setLeads(prev => prev.filter(l => l.id !== id));
-  };
-
-  const addCallLogToLead = (leadId: string, call: Omit<CallLog, 'id' | 'date'>) => {
-    const newCallLog: CallLog = {
-      ...call,
-      id: `cl-${Date.now()}`,
-      date: `${getTodayDDMMYYYY()} 11:30`,
-    };
-    setLeads(prev =>
-      prev.map(l =>
-        l.id === leadId
-          ? {
-              ...l,
-              callLogs: [newCallLog, ...(l.callLogs || [])],
-              notes: [
-                {
-                  id: `note-${Date.now()}`,
-                  date: getTodayDDMMYYYY(),
-                  author: call.caller,
-                  text: `Call Logged (${call.outcome}): ${call.notes}`,
-                },
-                ...l.notes,
-              ],
-            }
-          : l
-      )
-    );
-  };
-
-  const updateLeadPriority = (leadId: string, priority: LeadPriority) => {
-    setLeads(prev => prev.map(l => (l.id === leadId ? { ...l, priority } : l)));
-  };
-
-  const markLeadLost = (leadId: string, reason: string) => {
-    setLeads(prev =>
-      prev.map(l =>
-        l.id === leadId
-          ? {
-              ...l,
-              status: 'Lost',
-              lostReason: reason,
-              notes: [
-                {
-                  id: `note-${Date.now()}`,
-                  date: getTodayDDMMYYYY(),
-                  author: currentUser?.fullName || 'Sales Executive',
-                  text: `Lead marked as Lost. Reason: ${reason}`,
-                },
-                ...l.notes,
-              ],
-            }
-          : l
-      )
-    );
-  };
-
-  const reassignLead = (leadId: string, salespersonId: string, salespersonName: string) => {
-    setLeads(prev =>
-      prev.map(l =>
-        l.id === leadId
-          ? {
-              ...l,
-              salespersonId,
-              salespersonName,
-              notes: [
-                {
-                  id: `note-${Date.now()}`,
-                  date: getTodayDDMMYYYY(),
-                  author: currentUser?.fullName || 'Management',
-                  text: `Lead reassigned to ${salespersonName}.`,
-                },
-                ...l.notes,
-              ],
-            }
-          : l
-      )
-    );
-  };
-
-  // Bike Actions
-  const addBike = (bikeData: Omit<Bike, 'id'>) => {
-    const newBike: Bike = {
-      ...bikeData,
-      id: `bike-${Date.now()}`,
-    };
-    setBikes(prev => [newBike, ...prev]);
-  };
-
-  const updateBike = (id: string, updates: Partial<Bike>) => {
-    setBikes(prev => prev.map(b => (b.id === id ? { ...b, ...updates } : b)));
-  };
-
-  // Booking Actions
-  const createBooking = (bookingData: {
-    customerName: string;
-    customerPhone: string;
-    customerNIC: string;
-    customerAddress: string;
-    salespersonId: string;
-    bikeId: string;
-    discountLkr?: number;
-    initialPayment?: {
-      amountLkr: number;
-      type: PaymentRecord['type'];
-      reference: string;
-      isVerified?: boolean;
-    };
-    leadId?: string;
-  }) => {
-    const targetBike = bikes.find(b => b.id === bookingData.bikeId);
-    if (!targetBike) {
-      return { success: false, error: 'Motorcycle not found in inventory.' };
-    }
-    if (targetBike.status !== 'Available') {
-      return {
-        success: false,
-        error: `Allocation failed: Chassis ${targetBike.chassisNumber} is currently "${targetBike.status}". Only Available units can be allocated.`,
-      };
-    }
-
-    const salesperson = employees.find(e => e.id === bookingData.salespersonId);
-    const salespersonName = salesperson ? salesperson.fullName : 'Showroom Sales Desk';
-
-    const discount = bookingData.discountLkr || 0;
-    const finalPrice = Math.max(0, targetBike.priceLkr - discount);
-
-    const bookingId = generateBookingId(bookings);
-    const payments: PaymentRecord[] = [];
-
-    if (bookingData.initialPayment && bookingData.initialPayment.amountLkr > 0) {
-      if (bookingData.initialPayment.amountLkr > finalPrice) {
-        return { success: false, error: 'Initial advance cannot exceed the total purchase price.' };
-      }
-      payments.push({
-        id: `pmt-${Date.now()}`,
-        date: getTodayDDMMYYYY(),
-        amountLkr: bookingData.initialPayment.amountLkr,
-        type: bookingData.initialPayment.type,
-        reference: bookingData.initialPayment.reference || 'Initial Deposit',
-        status: bookingData.initialPayment.isVerified ? 'Verified' : 'Pending Verification',
-        verifiedBy: bookingData.initialPayment.isVerified ? 'Finance Lead' : undefined,
-        verifiedAt: bookingData.initialPayment.isVerified ? `${getTodayDDMMYYYY()} (At Booking)` : undefined,
-      });
-    }
-
-    const verifiedPaidTotal = payments
-      .filter(p => p.status === 'Verified')
-      .reduce((sum, p) => sum + p.amountLkr, 0);
-
-    const newBooking: Booking = {
-      id: bookingId,
-      leadId: bookingData.leadId,
-      customerName: bookingData.customerName,
-      customerPhone: bookingData.customerPhone,
-      customerNIC: bookingData.customerNIC,
-      customerAddress: bookingData.customerAddress,
-      salespersonId: bookingData.salespersonId,
-      salespersonName,
-      bikeId: targetBike.id,
-      bikeModel: targetBike.model,
-      bikeColour: targetBike.colour,
-      bikeChassis: targetBike.chassisNumber,
-      bikeEngine: targetBike.engineNumber,
-      totalPriceLkr: targetBike.priceLkr,
-      discountLkr: discount,
-      finalPriceLkr: finalPrice,
-      payments,
-      status: 'Confirmed',
-      deliveryChecklist: {
-        paymentVerified: verifiedPaidTotal >= finalPrice && finalPrice > 0,
-        documentsChecked: false,
-        pdiCompleted: false,
-        customerOrientationDone: false,
-        deliveryNotes: 'Booking confirmed. Awaiting final pre-delivery inspections and finance clearance.',
-      },
-      createdAt: getTodayDDMMYYYY(),
-      timeline: [
-        {
-          id: `tl-${Date.now()}-1`,
-          date: `${getTodayDDMMYYYY()} 10:00`,
-          title: 'Booking Confirmed & Allocation Locked',
-          description: `Chassis ${targetBike.chassisNumber} reserved for ${bookingData.customerName}.`,
-          type: 'booking',
-        },
-        ...(payments.length > 0
-          ? [
-              {
-                id: `tl-${Date.now()}-2`,
-                date: `${getTodayDDMMYYYY()} 10:05`,
-                title: `Initial ${payments[0].type} Logged`,
-                description: `Payment of LKR ${payments[0].amountLkr.toLocaleString()} recorded (${payments[0].status}). Ref: ${payments[0].reference}`,
-                type: 'payment' as const,
-              },
-            ]
-          : []),
-      ],
-    };
-
-    // 1. Add booking
-    setBookings(prev => [newBooking, ...prev]);
-
-    // 2. Update bike to Reserved
-    setBikes(prev =>
-      prev.map(b =>
-        b.id === targetBike.id ? { ...b, status: 'Reserved', allocatedBookingId: bookingId } : b
-      )
-    );
-
-    // 3. Update linked lead if any
-    if (bookingData.leadId) {
-      setLeads(prev =>
-        prev.map(l =>
-          l.id === bookingData.leadId
-            ? {
-                ...l,
-                status: 'Booked',
-                bookingId,
-                notes: [
-                  {
-                    id: `n-${Date.now()}`,
-                    date: getTodayDDMMYYYY(),
-                    author: salespersonName,
-                    text: `Lead converted to formal booking ${bookingId} (Chassis: ${targetBike.chassisNumber}).`,
-                  },
-                  ...l.notes,
-                ],
-              }
-            : l
-        )
-      );
-    }
-
-    return { success: true, bookingId };
-  };
-
-  const convertLeadToBooking = (
-    leadId: string,
-    details: {
-      bikeId: string;
-      advanceAmountLkr: number;
-      paymentReference: string;
-      customerNIC: string;
-      customerAddress: string;
-    }
-  ) => {
-    const lead = leads.find(l => l.id === leadId);
-    if (!lead) return { success: false, error: 'Lead not found.' };
-
-    return createBooking({
-      customerName: lead.customerName,
-      customerPhone: lead.phone,
-      customerNIC: details.customerNIC || '1990****2031',
-      customerAddress: details.customerAddress || `${lead.city}, Sri Lanka`,
-      salespersonId: lead.salespersonId || 'emp-001',
-      bikeId: details.bikeId,
-      leadId,
-      initialPayment: {
-        amountLkr: details.advanceAmountLkr,
-        type: 'Booking Advance',
-        reference: details.paymentReference || 'Advance Payment (Cash/Cheque)',
-        isVerified: true, // Auto-verify booking advance when converted from lead for quick presenter demo
-      },
-    });
-  };
-
-  const cancelBooking = (bookingId: string, reason: string) => {
-    const targetBooking = bookings.find(b => b.id === bookingId);
-    if (!targetBooking) return { success: false, error: 'Booking not found.' };
-    if (targetBooking.status === 'Delivered') {
-      return { success: false, error: 'Cannot cancel a booking that has already been delivered.' };
-    }
-
-    // 1. Release the allocated bike back to Available
-    setBikes(prev =>
-      prev.map(b =>
-        b.id === targetBooking.bikeId || b.allocatedBookingId === bookingId
-          ? { ...b, status: 'Available', allocatedBookingId: undefined }
-          : b
-      )
-    );
-
-    // 2. Mark booking as Cancelled
-    setBookings(prev =>
-      prev.map(b =>
-        b.id === bookingId
-          ? {
-              ...b,
-              status: 'Cancelled',
-              timeline: [
-                {
-                  id: `tl-${Date.now()}`,
-                  date: `${getTodayDDMMYYYY()} 12:00`,
-                  title: 'Booking Cancelled & Stock Released',
-                  description: `Reason: ${reason}. Chassis ${targetBooking.bikeChassis} released back to Available showroom stock.`,
-                  type: 'status',
-                },
-                ...b.timeline,
-              ],
-            }
-          : b
-      )
-    );
-
-    // 3. Update linked lead if present
-    if (targetBooking.leadId) {
-      setLeads(prev =>
-        prev.map(l =>
-          l.id === targetBooking.leadId
-            ? {
-                ...l,
-                status: 'Contacted',
-                bookingId: undefined,
-                notes: [
-                  {
-                    id: `n-${Date.now()}`,
-                    date: getTodayDDMMYYYY(),
-                    author: 'System Operations',
-                    text: `Booking ${bookingId} cancelled: ${reason}. Lead reverted to Contacted status.`,
-                  },
-                  ...l.notes,
-                ],
-              }
-            : l
-        )
-      );
-    }
-
-    return { success: true };
-  };
-
-  const addPaymentToBooking = (
-    bookingId: string,
-    payment: {
-      amountLkr: number;
-      type: PaymentRecord['type'];
-      reference: string;
-      isVerified: boolean;
-    }
-  ) => {
-    const targetBooking = bookings.find(b => b.id === bookingId);
-    if (!targetBooking) return { success: false, error: 'Booking not found.' };
-
-    if (payment.amountLkr <= 0) {
-      return { success: false, error: 'Payment amount must be greater than zero.' };
-    }
-
-    const currentTotalPaid = targetBooking.payments.reduce((sum, p) => sum + p.amountLkr, 0);
-    const balance = targetBooking.finalPriceLkr - currentTotalPaid;
-
-    if (payment.amountLkr > balance) {
-      return {
-        success: false,
-        error: `Overpayment blocked: Outstanding balance is LKR ${balance.toLocaleString()}. Cannot record LKR ${payment.amountLkr.toLocaleString()}.`,
-      };
-    }
-
-    const newPayment: PaymentRecord = {
-      id: `pmt-${Date.now()}`,
-      date: getTodayDDMMYYYY(),
-      amountLkr: payment.amountLkr,
-      type: payment.type,
-      reference: payment.reference,
-      status: payment.isVerified ? 'Verified' : 'Pending Verification',
-      verifiedBy: payment.isVerified ? 'Shiromi Gunawardena (Finance Lead)' : undefined,
-      verifiedAt: payment.isVerified ? `${getTodayDDMMYYYY()} 11:30` : undefined,
-    };
-
-    setBookings(prev =>
-      prev.map(b => {
-        if (b.id !== bookingId) return b;
-        const updatedPayments = [...b.payments, newPayment];
-        const verifiedPaid = updatedPayments
-          .filter(p => p.status === 'Verified')
-          .reduce((sum, p) => sum + p.amountLkr, 0);
-        const isFullyPaidAndVerified = verifiedPaid >= b.finalPriceLkr;
-
-        return {
-          ...b,
-          payments: updatedPayments,
-          deliveryChecklist: {
-            ...b.deliveryChecklist,
-            paymentVerified: isFullyPaidAndVerified,
-          },
-          timeline: [
-            {
-              id: `tl-${Date.now()}`,
-              date: `${getTodayDDMMYYYY()} 14:00`,
-              title: `${payment.type} Logged: LKR ${payment.amountLkr.toLocaleString()}`,
-              description: `Status: ${newPayment.status}. Ref: ${payment.reference}.`,
-              type: 'payment',
-            },
-            ...b.timeline,
-          ],
-        };
-      })
-    );
-
-    return { success: true };
-  };
-
-  const togglePaymentVerification = (bookingId: string, paymentId: string) => {
-    setBookings(prev =>
-      prev.map(b => {
-        if (b.id !== bookingId) return b;
-        let changedPayment: PaymentRecord | undefined;
-        const updatedPayments = b.payments.map(p => {
-          if (p.id !== paymentId) return p;
-          const nextStatus =
-            p.status === 'Verified' ? 'Pending Verification' : ('Verified' as const);
-          changedPayment = {
-            ...p,
-            status: nextStatus,
-            verifiedBy:
-              nextStatus === 'Verified' ? 'Shiromi Gunawardena (Finance Lead)' : undefined,
-            verifiedAt: nextStatus === 'Verified' ? `${getTodayDDMMYYYY()} 11:00` : undefined,
-          };
-          return changedPayment;
-        });
-
-        const verifiedPaid = updatedPayments
-          .filter(p => p.status === 'Verified')
-          .reduce((sum, p) => sum + p.amountLkr, 0);
-        const isFullyPaidAndVerified = verifiedPaid >= b.finalPriceLkr;
-
-        const timelineItem = changedPayment
-          ? {
-              id: `tl-${Date.now()}`,
-              date: `${getTodayDDMMYYYY()} 11:00`,
-              title: `Payment ${changedPayment.status}: LKR ${changedPayment.amountLkr.toLocaleString()}`,
-              description: `Finance verified collection status updated. Ref: ${changedPayment.reference}`,
-              type: 'payment' as const,
-            }
-          : null;
-
-        return {
-          ...b,
-          payments: updatedPayments,
-          deliveryChecklist: {
-            ...b.deliveryChecklist,
-            paymentVerified: isFullyPaidAndVerified,
-          },
-          timeline: timelineItem ? [timelineItem, ...b.timeline] : b.timeline,
-        };
-      })
-    );
-    return { success: true };
-  };
-
-  const updateDeliveryChecklist = (bookingId: string, checklist: Partial<DeliveryChecklist>) => {
-    setBookings(prev =>
-      prev.map(b => {
-        if (b.id !== bookingId) return b;
-        return {
-          ...b,
-          deliveryChecklist: {
-            ...b.deliveryChecklist,
-            ...checklist,
-          },
-        };
-      })
-    );
-  };
-
-  const deliverBooking = (bookingId: string, deliveredBy: string) => {
-    const targetBooking = bookings.find(b => b.id === bookingId);
-    if (!targetBooking) return { success: false, error: 'Booking not found.' };
-
-    const verifiedPaid = targetBooking.payments
-      .filter(p => p.status === 'Verified')
-      .reduce((sum, p) => sum + p.amountLkr, 0);
-    const balance = targetBooking.finalPriceLkr - verifiedPaid;
-
-    if (balance > 0) {
-      return {
-        success: false,
-        error: `Delivery blocked: Outstanding balance of LKR ${balance.toLocaleString()} must be settled and verified first.`,
-      };
-    }
-
-    if (!targetBooking.deliveryChecklist.documentsChecked) {
-      return {
-        success: false,
-        error:
-          'Delivery blocked: Registration, Insurance, and Revenue License documents must be verified first.',
-      };
-    }
-
-    if (!targetBooking.deliveryChecklist.pdiCompleted) {
-      return {
-        success: false,
-        error:
-          'Delivery blocked: Pre-Delivery Inspection (PDI) checklist must be completed by service technician.',
-      };
-    }
-
-    // Mark booking as delivered
-    setBookings(prev =>
-      prev.map(b =>
-        b.id === bookingId
-          ? {
-              ...b,
-              status: 'Delivered',
-              deliveredAt: `${getTodayDDMMYYYY()} 16:00`,
-              deliveredBy,
-              deliveryChecklist: {
-                ...b.deliveryChecklist,
-                customerOrientationDone: true,
-              },
-              timeline: [
-                {
-                  id: `tl-${Date.now()}`,
-                  date: `${getTodayDDMMYYYY()} 16:00`,
-                  title: 'Official Motorcycle Handover Completed',
-                  description: `Keys delivered by ${deliveredBy}. Customer orientation signed and handover photo taken.`,
-                  type: 'delivery',
-                },
-                ...b.timeline,
-              ],
-            }
-          : b
-      )
-    );
-
-    // Update bike status to Delivered
-    setBikes(prev =>
-      prev.map(b =>
-        b.id === targetBooking.bikeId || b.allocatedBookingId === bookingId
-          ? { ...b, status: 'Delivered' }
-          : b
-      )
-    );
-
-    return { success: true };
-  };
-
-  // HR Actions
-  const updateLeaveRequestStatus = (
-    leaveId: string,
-    status: LeaveStatus,
-    decisionBy = 'Roshan Samarasinghe (GM)'
-  ) => {
-    let affectedEmployeeId: string | undefined;
-    setLeaveRequests(prev =>
-      prev.map(l => {
-        if (l.id === leaveId) {
-          affectedEmployeeId = l.employeeId;
-          return {
-            ...l,
-            status,
-            decisionDate: getTodayDDMMYYYY(),
-            decisionBy,
-          };
-        }
-        return l;
-      })
-    );
-
-    if (affectedEmployeeId) {
-      setEmployees(prev =>
-        prev.map(e =>
-          e.id === affectedEmployeeId
-            ? { ...e, status: status === 'Approved' ? 'On Leave' : 'Active' }
-            : e
-        )
-      );
-    }
-  };
-
-  const addLeaveRequest = (request: Omit<LeaveRequest, 'id' | 'status' | 'appliedOn'>) => {
-    const newReq: LeaveRequest = {
-      ...request,
-      id: `LV-2026-${String(leaveRequests.length + 82).padStart(3, '0')}`,
-      status: 'Pending',
-      appliedOn: getTodayDDMMYYYY(),
-    };
-    setLeaveRequests(prev => [newReq, ...prev]);
-  };
-
-  const markAttendance = (employeeId: string, status: AttendanceStatus, notes = '') => {
-    setAttendance(prev => {
-      const existing = prev.find(a => a.employeeId === employeeId);
-      if (existing) {
-        return prev.map(a => (a.employeeId === employeeId ? { ...a, status, notes } : a));
-      }
-      const employee = employees.find(e => e.id === employeeId);
-      const newRec: AttendanceRecord = {
-        id: `att-${Date.now()}`,
-        date: getTodayDDMMYYYY(),
-        employeeId,
-        employeeName: employee ? employee.fullName : 'Employee',
-        department: employee ? employee.department : 'General',
-        status,
-        checkInTime: '08:30 AM',
-        notes,
-      };
-      return [...prev, newRec];
-    });
-  };
-
-  // Service Actions
-  const updateServiceStatus = (jobCardId: string, status: ServiceJobCard['status']) => {
-    setServiceJobCards(prev => prev.map(s => (s.id === jobCardId ? { ...s, status } : s)));
-  };
-
-  const addServiceJobCard = (card: Omit<ServiceJobCard, 'id'>) => {
-    const newCard: ServiceJobCard = {
-      ...card,
-      id: `JC-2026-${String(serviceJobCards.length + 107).padStart(3, '0')}`,
-    };
-    setServiceJobCards(prev => [newCard, ...prev]);
-  };
-
-  // Accessories Actions
-  const addAccessoryToBooking = (bookingId: string, accessoryId: string, quantity = 1) => {
-    const accessory = accessories.find(a => a.id === accessoryId);
-    if (!accessory) return { success: false, error: 'Accessory not found in catalog.' };
-    if (accessory.stockQuantity < quantity) return { success: false, error: 'Insufficient accessory stock quantity.' };
-
-    let success = false;
-    setBookings(prev =>
-      prev.map(b => {
-        if (b.id !== bookingId) return b;
-        const currentAccessories = b.accessories || [];
-        const existingIdx = currentAccessories.findIndex(a => a.accessoryId === accessoryId);
-        let updatedAccessories = [...currentAccessories];
-        if (existingIdx >= 0) {
-          updatedAccessories[existingIdx] = {
-            ...updatedAccessories[existingIdx],
-            quantity: updatedAccessories[existingIdx].quantity + quantity,
-          };
-        } else {
-          updatedAccessories.push({
-            accessoryId,
-            name: accessory.name,
-            priceLkr: accessory.priceLkr,
-            quantity,
-            isFitted: false,
-          });
-        }
-        const accessoriesTotalLkr = updatedAccessories.reduce(
-          (sum, acc) => sum + acc.priceLkr * acc.quantity,
-          0
-        );
-        const tradeInCreditLkr = b.tradeInCreditLkr || 0;
-        const finalPriceLkr = Math.max(0, b.totalPriceLkr - (b.discountLkr || 0) + accessoriesTotalLkr - tradeInCreditLkr);
-        success = true;
-        return {
-          ...b,
-          accessories: updatedAccessories,
-          accessoriesTotalLkr,
-          finalPriceLkr,
-        };
-      })
-    );
-
-    if (success) {
-      setAccessories(prev =>
-        prev.map(a => (a.id === accessoryId ? { ...a, stockQuantity: a.stockQuantity - quantity } : a))
-      );
-    }
-    return { success };
-  };
-
-  const removeAccessoryFromBooking = (bookingId: string, accessoryId: string) => {
-    let releasedQty = 0;
-    setBookings(prev =>
-      prev.map(b => {
-        if (b.id !== bookingId) return b;
-        const currentAccessories = b.accessories || [];
-        const item = currentAccessories.find(a => a.accessoryId === accessoryId);
-        if (!item) return b;
-        releasedQty = item.quantity;
-        const updatedAccessories = currentAccessories.filter(a => a.accessoryId !== accessoryId);
-        const accessoriesTotalLkr = updatedAccessories.reduce(
-          (sum, acc) => sum + acc.priceLkr * acc.quantity,
-          0
-        );
-        const tradeInCreditLkr = b.tradeInCreditLkr || 0;
-        const finalPriceLkr = Math.max(0, b.totalPriceLkr - (b.discountLkr || 0) + accessoriesTotalLkr - tradeInCreditLkr);
-        return {
-          ...b,
-          accessories: updatedAccessories,
-          accessoriesTotalLkr,
-          finalPriceLkr,
-        };
-      })
-    );
-
-    if (releasedQty > 0) {
-      setAccessories(prev =>
-        prev.map(a => (a.id === accessoryId ? { ...a, stockQuantity: a.stockQuantity + releasedQty } : a))
-      );
-    }
-    return { success: true };
-  };
-
-  // Test Ride Actions
-  const addTestRide = (record: Omit<TestRideRecord, 'id'>) => {
-    const newRide: TestRideRecord = {
-      ...record,
-      id: `TR-2026-${String(testRides.length + 101).padStart(3, '0')}`,
-    };
-    setTestRides(prev => [newRide, ...prev]);
-  };
-
-  const updateTestRideStatus = (
-    id: string,
-    status: TestRideRecord['status'],
-    feedbackRating?: number,
-    feedbackNotes?: string
-  ) => {
-    setTestRides(prev =>
-      prev.map(tr =>
-        tr.id === id
-          ? {
-              ...tr,
-              status,
-              ...(feedbackRating !== undefined ? { feedbackRating } : {}),
-              ...(feedbackNotes !== undefined ? { feedbackNotes } : {}),
-            }
-          : tr
-      )
-    );
-  };
-
-  const convertTestRideToLead = (testRideId: string) => {
-    const tr = testRides.find(r => r.id === testRideId);
-    if (!tr) return { success: false };
-    const newLead: Lead = {
-      id: `lead-${Date.now()}`,
-      customerName: tr.customerName,
-      phone: tr.customerPhone,
-      email: `${tr.customerName.toLowerCase().replace(/\s+/g, '.')}@client.lk`,
-      city: 'Colombo',
-      modelInterest: tr.model,
-      colorPreference: 'Standard',
-      salespersonId: 'emp-001',
-      salespersonName: tr.salespersonName,
-      source: 'Test Ride Experience',
-      status: 'Test Ride',
-      nextFollowUpDate: getTodayDDMMYYYY(),
-      createdAt: getTodayDDMMYYYY(),
-      notes: [
-        {
-          id: `note-${Date.now()}`,
-          date: getTodayDDMMYYYY(),
-          author: tr.salespersonName,
-          text: `Customer completed test ride on ${tr.model} (${tr.route}). Rating: ${tr.feedbackRating ? `${tr.feedbackRating}/5 stars` : 'Pending'}. ${tr.feedbackNotes || ''}`,
-        },
-      ],
-    };
-    setLeads(prev => [newLead, ...prev]);
-    return { success: true, leadId: newLead.id };
-  };
-
-  // Trade-In Actions
-  const addTradeInValuation = (val: Omit<TradeInValuation, 'id' | 'date'>) => {
-    const id = `TI-2026-${String(tradeIns.length + 101).padStart(3, '0')}`;
-    const newVal: TradeInValuation = {
-      ...val,
-      id,
-      date: getTodayDDMMYYYY(),
-    };
-    setTradeIns(prev => [newVal, ...prev]);
-    return { success: true, id };
-  };
-
-  const applyTradeInToBooking = (tradeInId: string, bookingId: string) => {
-    const tradeIn = tradeIns.find(t => t.id === tradeInId);
-    if (!tradeIn) return { success: false, error: 'Valuation record not found.' };
-    const booking = bookings.find(b => b.id === bookingId);
-    if (!booking) return { success: false, error: 'Target booking not found.' };
-
-    const creditAmount = tradeIn.estimatedValuationLkr;
-    setBookings(prev =>
-      prev.map(b => {
-        if (b.id !== bookingId) return b;
-        const accessoriesTotal = b.accessoriesTotalLkr || 0;
-        const finalPriceLkr = Math.max(0, b.totalPriceLkr - (b.discountLkr || 0) + accessoriesTotal - creditAmount);
-        return {
-          ...b,
-          tradeInCreditLkr: creditAmount,
-          finalPriceLkr,
-        };
-      })
-    );
-
-    setTradeIns(prev =>
-      prev.map(t => (t.id === tradeInId ? { ...t, appliedBookingId: bookingId } : t))
-    );
-    return { success: true };
-  };
-
-  // Reset Demo Data
-  const resetDemoData = () => {
-    try {
-      localStorage.removeItem(`${STORAGE_KEY}_leads`);
-      localStorage.removeItem(`${STORAGE_KEY}_bikes`);
-      localStorage.removeItem(`${STORAGE_KEY}_bookings`);
-      localStorage.removeItem(`${STORAGE_KEY}_employees`);
-      localStorage.removeItem(`${STORAGE_KEY}_leaves`);
-      localStorage.removeItem(`${STORAGE_KEY}_attendance`);
-      localStorage.removeItem(`${STORAGE_KEY}_service`);
-      localStorage.removeItem(`${STORAGE_KEY}_accessories`);
-      localStorage.removeItem(`${STORAGE_KEY}_testrides`);
-      localStorage.removeItem(`${STORAGE_KEY}_tradeins`);
-    } catch (e) {
-      console.warn('Clear storage error:', e);
-    }
-    setLeads(INITIAL_LEADS);
-    setBikes(INITIAL_BIKES);
-    setBookings(INITIAL_BOOKINGS);
-    setEmployees(INITIAL_EMPLOYEES);
-    setLeaveRequests(INITIAL_LEAVE_REQUESTS);
-    setAttendance(INITIAL_ATTENDANCE);
-    setServiceJobCards(INITIAL_SERVICE_CARDS);
-    setAccessories(INITIAL_ACCESSORIES);
-    setTestRides(INITIAL_TEST_RIDES);
-    setTradeIns(INITIAL_TRADE_INS);
-    setNotificationModal(null);
-    setSelectedLeadId(null);
-    setSelectedBookingId(null);
-    setSelectedBikeId(null);
-    setPrintableBookingId(null);
-  };
+  const closeNotificationModal = () => setNotificationModal(null);
 
   return (
     <ShowroomContext.Provider
       value={{
+        authStatus,
+        authError,
+        pendingAuthEmail,
         currentUser,
-        login,
+        signInWithGoogle,
+        signInWithEmail,
+        sendPasswordReset,
         logout,
-        switchUserRole,
-        crmViewMode,
-        setCrmViewMode,
-        addCallLogToLead,
-        updateLeadPriority,
-        markLeadLost,
-        reassignLead,
-        proformaQuoteLeadId,
-        setProformaQuoteLeadId,
+        can,
+        canView,
         currentView,
         setCurrentView,
-        currentRole,
-        setCurrentRole,
-        demoGuideOpen,
-        setDemoGuideOpen,
+        currentRole: currentUser?.role || 'sales',
         leads,
         bikes,
         bookings,
@@ -1400,6 +1243,11 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         accessories,
         testRides,
         tradeIns,
+        staffUsers,
+        staffInvites,
+        auditLogs,
+        operationError,
+        clearOperationError,
         metrics,
         addLead,
         updateLead,
@@ -1411,7 +1259,9 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         createBooking,
         cancelBooking,
         addPaymentToBooking,
-        togglePaymentVerification,
+        verifyPayment,
+        reversePayment,
+        decideDiscount,
         updateDeliveryChecklist,
         deliverBooking,
         updateLeaveRequestStatus,
@@ -1425,13 +1275,24 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         updateTestRideStatus,
         convertTestRideToLead,
         addTradeInValuation,
+        decideTradeIn,
         applyTradeInToBooking,
+        inviteStaff,
+        updateStaffRoleOrStatus,
+        exportDatabaseBackup,
         notificationModal,
         openNotificationModal,
         closeNotificationModal,
-        resetDemoData,
         selectedLeadId,
         setSelectedLeadId,
+        crmViewMode,
+        setCrmViewMode,
+        addCallLogToLead,
+        updateLeadPriority,
+        markLeadLost,
+        reassignLead,
+        proformaQuoteLeadId,
+        setProformaQuoteLeadId,
         selectedBookingId,
         setSelectedBookingId,
         selectedBikeId,

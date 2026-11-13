@@ -488,7 +488,7 @@ export const CrmView: React.FC<{
                             <button
                               type="button"
                               onClick={() => setProformaQuoteLeadId(lead.id)}
-                              title="Generate Official Proforma Quotation"
+                              title="Generate Illustrative Proforma Quotation"
                               className="p-1.5 text-stone-400 hover:text-amber-400 hover:bg-stone-800 rounded transition-colors"
                             >
                               <FileText className="w-3.5 h-3.5" />

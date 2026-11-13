@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   Truck,
   Plus,
-  BookOpen,
   Calendar,
   Sparkles,
   Zap,
@@ -38,7 +37,6 @@ export const DashboardView: React.FC<{
     setCurrentView,
     setSelectedBookingId,
     setSelectedLeadId,
-    setDemoGuideOpen,
   } = useShowroom();
 
   // Funnel calculations
@@ -76,7 +74,7 @@ export const DashboardView: React.FC<{
             ShowroomOS Executive Overview
           </h1>
           <p className="text-xs text-stone-400 mt-1 max-w-2xl leading-relaxed">
-            Live operational dashboard reconciled directly against stored showroom records. No simulated approximations or decoupled telemetry.
+            Operational overview reconciled against stored Firestore showroom records for your authorized permissions.
           </p>
         </div>
 
@@ -408,7 +406,7 @@ export const DashboardView: React.FC<{
             </span>
           </div>
           <div className="text-[11px] text-stone-400 mt-1">
-            Genuine Royal Enfield GMA Parts
+            Royal Enfield Accessories & Parts Catalog
           </div>
         </div>
 
@@ -563,44 +561,44 @@ export const DashboardView: React.FC<{
           </div>
         </div>
 
-        {/* Operational Highlights & Stakeholder Presentation CTA */}
+        {/* Operational Controls & Governance Summary */}
         <div className="bg-[#18191d] border border-stone-800 rounded-xl p-5 text-stone-200 space-y-4 flex flex-col justify-between">
           <div className="space-y-3">
             <div className="flex items-center gap-2 border-b border-stone-800 pb-3">
               <ShieldCheck className="w-4 h-4 text-amber-400" />
               <h3 className="text-sm font-bold text-white tracking-tight">
-                Stakeholder Demo Mode
+                Dealership Governance & Controls
               </h3>
             </div>
             <p className="text-xs text-stone-300 leading-relaxed">
-              Every metric on this dashboard is bound strictly to the browser's live data store. Approving a leave request, creating a booking, or verifying a cheque updates these totals immediately.
+              Every metric on this dashboard reflects Firestore showroom records accessible under your assigned staff role. Financial approvals, chassis allocations, and handover gates are enforced server-side.
             </p>
 
             <div className="bg-[#121316] p-3 rounded-lg border border-stone-800 space-y-2 text-xs">
-              <div className="font-semibold text-stone-200">Recommended Next Steps:</div>
+              <div className="font-semibold text-stone-200">Mandatory Workflow Gates:</div>
               <ul className="space-y-1.5 text-stone-400 text-[11px]">
                 <li className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  Convert qualified lead <strong>Malith Fernando</strong>
+                  1:1 atomic chassis reservation per active booking
                 </li>
                 <li className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                  Verify <strong>Arun Perera's</strong> down payment
+                  Finance verification & approval before collections count
                 </li>
                 <li className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
-                  Execute zero-balance delivery for <strong>Dinuka</strong>
+                  Zero balance + PDI sign-off required for handover
                 </li>
               </ul>
             </div>
           </div>
 
           <button
-            onClick={() => setDemoGuideOpen(true)}
-            className="w-full py-2.5 px-4 bg-amber-950/70 hover:bg-amber-900/80 border border-amber-700/80 text-amber-200 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-2"
+            onClick={() => setCurrentView('bookings')}
+            className="w-full py-2.5 px-4 bg-stone-900 hover:bg-stone-800 border border-stone-700 text-stone-200 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-2"
           >
-            <BookOpen className="w-4 h-4 text-amber-400" />
-            <span>Open Demo Walkthrough Guide</span>
+            <FileCheck2 className="w-4 h-4 text-amber-400" />
+            <span>Open Bookings & Payments Queue</span>
           </button>
         </div>
       </div>

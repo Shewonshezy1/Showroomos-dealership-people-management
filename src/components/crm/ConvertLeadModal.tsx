@@ -6,7 +6,7 @@
 import React, { useState } from 'react';
 import { useShowroom } from '../../context/ShowroomContext';
 import { formatLKR } from '../../utils/formatters';
-import { X, FileCheck2, AlertCircle, Compass, CheckCircle2 } from 'lucide-react';
+import { X, FileCheck2, AlertCircle } from 'lucide-react';
 
 export const ConvertLeadModal: React.FC<{
   leadId: string | null;
@@ -20,35 +20,33 @@ export const ConvertLeadModal: React.FC<{
     setCurrentView,
   } = useShowroom();
 
-  if (!leadId) return null;
-  const lead = leads.find(l => l.id === leadId);
-  if (!lead) return null;
-
-  // Only Available bikes can be allocated!
+  const lead = leadId ? leads.find(l => l.id === leadId) : undefined;
   const availableBikes = bikes.filter(b => b.status === 'Available');
-
-  // Try to find an available bike matching model preference
-  const preferredBike = availableBikes.find(b => b.model === lead.modelInterest);
+  const preferredBike = lead ? availableBikes.find(b => b.model === lead.modelInterest) : undefined;
   const initialBikeId = preferredBike?.id || availableBikes[0]?.id || '';
 
   const [selectedBikeId, setSelectedBikeId] = useState<string>(initialBikeId);
   const [advanceAmountLkr, setAdvanceAmountLkr] = useState<number>(500000);
-  const [paymentReference, setPaymentReference] = useState('SL-CHQ-BookingAdvance');
-  const [customerNIC, setCustomerNIC] = useState('1990****4810');
-  const [customerAddress, setCustomerAddress] = useState(`${lead.city}, Sri Lanka`);
+  const [paymentReference, setPaymentReference] = useState('');
+  const [customerNIC, setCustomerNIC] = useState('');
+  const [customerAddress, setCustomerAddress] = useState(lead ? `${lead.city}, Sri Lanka` : '');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   React.useEffect(() => {
-    if (leadId) {
-      const match = availableBikes.find(b => b.model === lead?.modelInterest);
+    if (leadId && lead) {
+      const match = availableBikes.find(b => b.model === lead.modelInterest);
       setSelectedBikeId(match?.id || availableBikes[0]?.id || '');
+      setCustomerAddress(`${lead.city}, Sri Lanka`);
       setError('');
     }
   }, [leadId, availableBikes.length, lead?.modelInterest]);
 
+  if (!leadId || !lead) return null;
+
   const targetBike = bikes.find(b => b.id === selectedBikeId);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedBikeId || !availableBikes.some(b => b.id === selectedBikeId)) {
       setError('Please select an available motorcycle to allocate.');
@@ -63,13 +61,15 @@ export const ConvertLeadModal: React.FC<{
       return;
     }
 
-    const res = convertLeadToBooking(lead.id, {
+    setSubmitting(true);
+    const res = await convertLeadToBooking(lead.id, {
       bikeId: selectedBikeId,
       advanceAmountLkr,
-      paymentReference: paymentReference.trim() || 'Showroom Counter Advance',
-      customerNIC: customerNIC.trim() || '1990****2031',
+      paymentReference: paymentReference.trim() || 'Counter Advance Receipt',
+      customerNIC: customerNIC.trim() || 'Pending NIC',
       customerAddress: customerAddress.trim() || `${lead.city}, Sri Lanka`,
     });
+    setSubmitting(false);
 
     if (!res.success) {
       setError(res.error || 'Conversion failed.');
@@ -85,7 +85,7 @@ export const ConvertLeadModal: React.FC<{
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
-      <div className="bg-[#18191d] border border-stone-700 text-stone-200 rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in duration-150">
+      <div className="bg-[#18191d] border border-stone-700 text-stone-200 rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
         <div className="px-6 py-4 border-b border-stone-800 flex items-center justify-between bg-[#151619]">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-[#9b1c1c] text-white flex items-center justify-center">
@@ -93,7 +93,7 @@ export const ConvertLeadModal: React.FC<{
             </div>
             <div>
               <h3 className="text-sm font-bold text-white tracking-tight">
-                Convert Lead to Formal Booking
+                Convert Lead to Booking
               </h3>
               <p className="text-[11px] text-stone-400">
                 Lock stock allocation for {lead.customerName}
@@ -116,7 +116,6 @@ export const ConvertLeadModal: React.FC<{
             </div>
           )}
 
-          {/* Customer Summary Box */}
           <div className="bg-[#121316] p-3 rounded-lg border border-stone-800 space-y-1">
             <div className="flex justify-between">
               <span className="text-stone-400">Customer:</span>
@@ -136,7 +135,6 @@ export const ConvertLeadModal: React.FC<{
             </div>
           </div>
 
-          {/* Available Motorcycle Allocation Dropdown */}
           <div>
             <label className="block text-stone-400 mb-1 font-semibold flex items-center justify-between">
               <span>Select Available Stock Unit *</span>
@@ -147,7 +145,7 @@ export const ConvertLeadModal: React.FC<{
 
             {availableBikes.length === 0 ? (
               <div className="p-3 bg-rose-950/40 border border-rose-900 rounded-lg text-rose-300 text-xs">
-                No motorcycles currently have "Available" status. Please add stock in the Motorcycle Inventory module first.
+                No motorcycles currently have "Available" status.
               </div>
             ) : (
               <select
@@ -183,15 +181,15 @@ export const ConvertLeadModal: React.FC<{
             )}
           </div>
 
-          {/* KYC Details */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-stone-400 mb-1 font-medium">Customer NIC (Synthetic)</label>
+              <label className="block text-stone-400 mb-1 font-medium">Customer NIC *</label>
               <input
                 type="text"
+                required
                 value={customerNIC}
                 onChange={e => setCustomerNIC(e.target.value)}
-                placeholder="1990****2031"
+                placeholder="NIC Reference"
                 className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 font-mono focus:outline-hidden focus:border-stone-500"
               />
             </div>
@@ -207,7 +205,6 @@ export const ConvertLeadModal: React.FC<{
             </div>
           </div>
 
-          {/* Advance Deposit */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-stone-400 mb-1 font-medium">Booking Advance (LKR)</label>
@@ -221,7 +218,7 @@ export const ConvertLeadModal: React.FC<{
               />
             </div>
             <div>
-              <label className="block text-stone-400 mb-1 font-medium">Payment / Cheque Ref</label>
+              <label className="block text-stone-400 mb-1 font-medium">Payment Reference</label>
               <input
                 type="text"
                 value={paymentReference}
@@ -232,24 +229,24 @@ export const ConvertLeadModal: React.FC<{
             </div>
           </div>
 
-          <div className="bg-amber-950/30 border border-amber-800/60 p-2.5 rounded text-[11px] text-amber-300">
-            <strong>Demonstration Rule:</strong> Submitting will lock this chassis, set the motorcycle status to <strong>Reserved</strong>, and create a formal booking order with initial verified advance.
+          <div className="bg-amber-950/30 border border-amber-800/60 p-2.5 rounded text-[11px] text-amber-200">
+            <strong>Rule:</strong> Booking reserves this chassis atomically in Firestore. Any initial deposit is logged as <span className="font-mono">Pending Verification</span> for Finance review.
           </div>
 
           <div className="pt-2 border-t border-stone-800 flex items-center justify-end gap-2.5">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-stone-400 hover:text-white bg-stone-800 hover:bg-stone-700 rounded-md transition-colors"
+              className="px-4 py-2 text-stone-400 hover:text-white bg-stone-800 hover:bg-stone-700 rounded-md transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={availableBikes.length === 0}
-              className="px-5 py-2 font-semibold text-white bg-[#9b1c1c] hover:bg-[#b91c1c] disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors shadow-xs"
+              disabled={availableBikes.length === 0 || submitting}
+              className="px-5 py-2 font-semibold text-white bg-[#9b1c1c] hover:bg-[#b91c1c] disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors shadow-xs cursor-pointer"
             >
-              Confirm Booking & Reserve Bike
+              {submitting ? 'Reserving...' : 'Confirm Booking & Reserve Bike'}
             </button>
           </div>
         </form>

@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { useShowroom } from '../../context/ShowroomContext';
+import { ROLE_LABELS } from '../../auth/permissions';
 import { AppView } from '../../types';
 import {
   LayoutDashboard,
@@ -19,10 +20,11 @@ import {
   Zap,
   Repeat,
   Calculator,
+  ShieldCheck,
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
-  const { currentView, setCurrentView, metrics, currentUser, logout, switchUserRole } = useShowroom();
+  const { currentView, setCurrentView, metrics, currentUser, logout, canView } = useShowroom();
 
   const coreNavItems: Array<{
     id: AppView;
@@ -75,10 +77,8 @@ export const Sidebar: React.FC = () => {
   }> = [
     {
       id: 'accessories',
-      label: 'Accessories & Custom Parts',
+      label: 'Accessories & Apparel',
       icon: Sparkles,
-      badge: 'Genuine',
-      badgeColor: 'bg-stone-800 text-stone-300 border border-stone-700',
     },
     {
       id: 'testrides',
@@ -91,12 +91,12 @@ export const Sidebar: React.FC = () => {
       id: 'tradein',
       label: 'Bike Exchange / Trade-In',
       icon: Repeat,
-      badge: metrics.activeTradeInsCount > 0 ? `${metrics.activeTradeInsCount} Pending` : undefined,
+      badge: metrics.activeTradeInsCount > 0 ? `${metrics.activeTradeInsCount} Open` : undefined,
       badgeColor: 'bg-emerald-950/70 text-emerald-300 border border-emerald-800',
     },
     {
       id: 'financing',
-      label: 'Leasing & EMI Calculator',
+      label: 'Leasing & EMI Estimator',
       icon: Calculator,
     },
   ];
@@ -125,53 +125,68 @@ export const Sidebar: React.FC = () => {
       label: 'Reports & CSV Audits',
       icon: BarChart3,
     },
+    {
+      id: 'admin',
+      label: 'Access & Audit Logs',
+      icon: ShieldCheck,
+    },
   ];
 
-  const renderNavGroup = (items: typeof coreNavItems) => (
-    <div className="space-y-0.5">
-      {items.map(item => {
-        const Icon = item.icon;
-        const isActive = currentView === item.id;
+  const renderNavGroup = (label: string, items: typeof coreNavItems) => {
+    const allowed = items.filter(item => canView(item.id));
+    if (allowed.length === 0) return null;
 
-        return (
-          <button
-            key={item.id}
-            onClick={() => setCurrentView(item.id)}
-            className={`w-full flex items-center justify-between px-3 py-2 text-xs font-medium rounded-md transition-all ${
-              isActive
-                ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
-                : 'text-stone-300 hover:text-white hover:bg-stone-800/60'
-            }`}
-          >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <Icon
-                className={`w-4 h-4 shrink-0 ${
-                  isActive ? 'text-white' : 'text-stone-400'
-                }`}
-              />
-              <span className="truncate">{item.label}</span>
-            </div>
+    return (
+      <div>
+        <div className="text-[10px] uppercase font-semibold text-stone-500 tracking-wider px-3 py-1 mb-1">
+          {label}
+        </div>
+        <div className="space-y-0.5">
+          {allowed.map(item => {
+            const Icon = item.icon;
+            const isActive = currentView === item.id;
 
-            {item.badge !== undefined && (
-              <span
-                className={`px-1.5 py-0.5 text-[10px] font-mono rounded ${
+            return (
+              <button
+                key={item.id}
+                onClick={() => setCurrentView(item.id)}
+                className={`w-full flex items-center justify-between px-3 py-2 text-xs font-medium rounded-md transition-all cursor-pointer ${
                   isActive
-                    ? 'bg-black/40 text-white'
-                    : item.badgeColor || 'bg-stone-800 text-stone-400'
+                    ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
+                    : 'text-stone-300 hover:text-white hover:bg-stone-800/60'
                 }`}
               >
-                {item.badge}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Icon
+                    className={`w-4 h-4 shrink-0 ${
+                      isActive ? 'text-white' : 'text-stone-400'
+                    }`}
+                  />
+                  <span className="truncate">{item.label}</span>
+                </div>
+
+                {item.badge !== undefined && (
+                  <span
+                    className={`px-1.5 py-0.5 text-[10px] font-mono rounded ${
+                      isActive
+                        ? 'bg-black/40 text-white'
+                        : item.badgeColor || 'bg-stone-800 text-stone-400'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <aside className="no-print w-64 bg-[#141518] border-r border-[#24262b] text-stone-300 flex flex-col shrink-0 select-none">
-      {/* Dealer Identity Strip with Official Logo */}
+      {/* Dealer Identity Strip */}
       <div className="p-3.5 border-b border-[#24262b] bg-[#101113]">
         <div className="flex items-center justify-between mb-2.5">
           <div className="bg-white px-2 py-1 rounded shadow-xs flex items-center">
@@ -181,9 +196,8 @@ export const Sidebar: React.FC = () => {
               className="h-6 w-auto object-contain"
             />
           </div>
-          <span className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-mono">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            LIVE
+          <span className="text-[10px] text-stone-400 font-mono bg-stone-900 border border-stone-800 px-1.5 py-0.5 rounded">
+            FIRESTORE
           </span>
         </div>
         <div>
@@ -191,81 +205,44 @@ export const Sidebar: React.FC = () => {
             <span>IDEAL NOVA MOTORS</span>
           </div>
           <div className="text-[10px] text-stone-400 mt-0.5 flex items-center gap-1">
-            <span>Authorized Royal Enfield Hub</span>
+            <span>Royal Enfield Showroom</span>
             <span>·</span>
             <span>Sri Lanka</span>
           </div>
         </div>
       </div>
 
-      {/* Navigation Links */}
+      {/* Permission-Filtered Navigation Links */}
       <nav className="flex-1 p-3 space-y-4 overflow-y-auto">
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-stone-500 tracking-wider px-3 py-1 mb-1">
-            Core Dealership
-          </div>
-          {renderNavGroup(coreNavItems)}
-        </div>
-
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-stone-500 tracking-wider px-3 py-1 mb-1">
-            Experience & Programs
-          </div>
-          {renderNavGroup(showroomProgramItems)}
-        </div>
-
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-stone-500 tracking-wider px-3 py-1 mb-1">
-            Operations & Reports
-          </div>
-          {renderNavGroup(operationsItems)}
-        </div>
+        {renderNavGroup('Core Dealership', coreNavItems)}
+        {renderNavGroup('Experience & Programs', showroomProgramItems)}
+        {renderNavGroup('Operations & Governance', operationsItems)}
       </nav>
 
-      {/* Active User Card & Quick Role Access */}
-      <div className="p-3 border-t border-[#24262b] bg-[#101113] space-y-2.5">
-        <div className="flex items-center justify-between">
+      {/* Active Authenticated User Card (No Role Switcher) */}
+      <div className="p-3 border-t border-[#24262b] bg-[#101113]">
+        <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-7 h-7 rounded-full bg-[#9b1c1c] text-white flex items-center justify-center font-bold text-xs shrink-0">
-              {currentUser?.name?.charAt(0) || 'U'}
+              {currentUser?.fullName?.charAt(0).toUpperCase() || 'S'}
             </div>
             <div className="min-w-0">
               <div className="text-xs font-semibold text-white truncate">
-                {currentUser?.name || 'Authorized Staff'}
+                {currentUser?.fullName || 'Staff Member'}
               </div>
-              <div className="text-[10px] text-stone-400 truncate">
-                {currentUser?.roleLabel || 'Staff Member'}
+              <div className="text-[10px] text-amber-300 font-mono truncate">
+                {currentUser ? ROLE_LABELS[currentUser.role] : 'Authenticated'}
               </div>
             </div>
           </div>
           <button
+            type="button"
             onClick={logout}
-            title="Sign out of DMS"
-            className="text-[10px] font-semibold text-stone-400 hover:text-rose-400 px-2 py-1 rounded hover:bg-stone-800 transition-colors"
+            title="Sign out"
+            className="text-[10px] font-semibold text-stone-400 hover:text-rose-400 px-2 py-1 rounded hover:bg-stone-800 transition-colors cursor-pointer shrink-0"
           >
             Sign Out
           </button>
-        </div>
-
-        {/* Quick Role Switcher for seamless workflow testing */}
-        <div className="pt-2 border-t border-stone-800/80 flex items-center justify-between">
-          <span className="text-[10px] text-stone-500 font-medium">Switch Role:</span>
-          <div className="flex items-center gap-1">
-            {(['management', 'sales', 'finance', 'service', 'hr'] as const).map(r => (
-              <button
-                key={r}
-                onClick={() => switchUserRole(r)}
-                title={`Switch active user view to ${r}`}
-                className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-bold transition-colors ${
-                  currentUser?.role === r
-                    ? 'bg-[#9b1c1c] text-white'
-                    : 'bg-stone-800 text-stone-400 hover:text-stone-200'
-                }`}
-              >
-                {r === 'management' ? 'MGT' : r === 'sales' ? 'SALES' : r === 'finance' ? 'FIN' : r === 'service' ? 'SRV' : 'HR'}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
     </aside>

@@ -67,15 +67,15 @@ export const AccessoriesView: React.FC = () => {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-[11px] font-mono uppercase px-2 py-0.5 rounded bg-red-950/50 text-red-400 border border-red-900/40">
-              Genuine Motorcycle Accessories & Gear
+              Motorcycle Accessories & Gear
             </span>
-            <span className="text-xs text-stone-500">· Royal Enfield Genuine Parts (GMA)</span>
+            <span className="text-xs text-stone-500">· Royal Enfield Parts & Apparel</span>
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-stone-100">
             Accessories & Riding Apparel Catalog
           </h1>
           <p className="text-xs text-stone-400 mt-0.5">
-            Original equipment components, protective armor, luggage systems, and touring accessories.
+            Protective gear, luggage systems, seats, and touring accessories tracked in Firestore inventory.
           </p>
         </div>
 
@@ -101,7 +101,7 @@ export const AccessoriesView: React.FC = () => {
             <div className="text-xl font-bold text-stone-100 font-mono tabular-nums">
               {accessories.length}
             </div>
-            <div className="text-[11px] text-stone-500">Active Genuine SKUs</div>
+            <div className="text-[11px] text-stone-500">Active Catalog SKUs</div>
           </div>
         </div>
 

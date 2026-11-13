@@ -57,20 +57,20 @@ export const ProformaQuotationModal: React.FC = () => {
 
   const handleSendWhatsAppQuote = () => {
     openNotificationModal({
-      title: 'Royal Enfield Official Proforma Quotation',
+      title: 'Proforma Estimate Draft (Simulated Preview)',
       recipientName: lead.customerName,
       recipientPhone: lead.phone,
-      message: `Dear ${lead.customerName},\nThank you for choosing Ideal Nova Motors (Royal Enfield Sri Lanka).\nHere is your official Proforma Quotation #${quoteId}:\n\n` +
+      message: `Dear ${lead.customerName},\nHere is your Proforma Quotation #${quoteId} (Illustrative Estimate):\n\n` +
         `• Motorcycle: Royal Enfield ${lead.modelInterest} (${lead.colorPreference})\n` +
         `• Base Price: ${formatLKR(basePriceLkr)}\n` +
         `• Registration & RMV: ${formatLKR(registrationFeesLkr)}\n` +
         `• 1st Year Insurance: ${formatLKR(insuranceLkr)}\n` +
-        `• Genuine Accessories Bundle: ${formatLKR(accessoriesEstimateLkr)}\n` +
-        `• Dealer Discount: -${formatLKR(standardDiscountLkr)}\n` +
+        `• Accessories Bundle: ${formatLKR(accessoriesEstimateLkr)}\n` +
+        `• Indicative Discount: -${formatLKR(standardDiscountLkr)}\n` +
         `• Total On-The-Road (LKR): ${formatLKR(totalOnTheRoadLkr)}\n\n` +
-        `Quotation valid for 14 calendar days.\nConsultant: ${lead.salespersonName}\nIdeal Nova Motors Flagship, Colombo 03.\nHotline: 011 234 5678`,
+        `Quotation valid for 14 calendar days. Consultant: ${lead.salespersonName}`,
       channel: 'WhatsApp',
-      purpose: 'Official Proforma Quote',
+      purpose: 'Simulated Proforma Quote Preview',
     });
   };
 
@@ -85,7 +85,7 @@ export const ProformaQuotationModal: React.FC = () => {
             </div>
             <div>
               <h3 className="text-sm font-semibold text-stone-100">
-                Official Proforma Quotation
+                Proforma Quotation (Illustrative Estimate)
               </h3>
               <p className="text-xs text-stone-400 font-mono">Ref: {quoteId}</p>
             </div>
@@ -128,7 +128,7 @@ export const ProformaQuotationModal: React.FC = () => {
                 />
               </div>
               <div className="text-[11px] text-stone-600 font-medium">
-                Ideal Nova Motors (Pvt) Ltd · Official Royal Enfield Dealership
+                Ideal Nova Motors (Pvt) Ltd · Illustrative Showroom Quotation
               </div>
               <div className="text-[10px] text-stone-500">
                 Flagship Experience Centre, Galle Road, Colombo 03, Sri Lanka.<br />
@@ -234,7 +234,7 @@ export const ProformaQuotationModal: React.FC = () => {
               </tr>
               <tr>
                 <td className="py-2.5 px-3">
-                  Genuine Royal Enfield Touring Accessories Package (Seat & Sump Guard)
+                  Touring Accessories Package (Seat & Sump Guard)
                 </td>
                 <td className="py-2.5 px-3 text-stone-500 font-mono text-[11px]">Accessories</td>
                 <td className="py-2.5 px-3 text-right font-mono">
@@ -291,7 +291,7 @@ export const ProformaQuotationModal: React.FC = () => {
               Customer Acknowledgement
             </div>
             <div className="pt-8 border-t border-stone-400 text-center text-stone-600">
-              Authorized Signatory · Ideal Nova Motors
+              Showroom Signatory · Ideal Nova Motors
             </div>
           </div>
         </div>

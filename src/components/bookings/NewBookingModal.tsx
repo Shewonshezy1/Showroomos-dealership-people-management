@@ -6,7 +6,6 @@
 import React, { useState } from 'react';
 import { useShowroom } from '../../context/ShowroomContext';
 import { formatLKR } from '../../utils/formatters';
-import { PaymentType } from '../../types';
 import { X, FileCheck2, AlertCircle } from 'lucide-react';
 
 export const NewBookingModal: React.FC<{
@@ -14,25 +13,24 @@ export const NewBookingModal: React.FC<{
   onClose: () => void;
   initialBikeId?: string;
 }> = ({ isOpen, onClose, initialBikeId }) => {
-  const { bikes, employees, createBooking, setSelectedBookingId } = useShowroom();
+  const { bikes, currentUser, createBooking, setSelectedBookingId } = useShowroom();
 
   const availableBikes = bikes.filter(b => b.status === 'Available');
 
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('+94 7');
-  const [customerNIC, setCustomerNIC] = useState('1992****3310');
+  const [customerNIC, setCustomerNIC] = useState('');
   const [customerAddress, setCustomerAddress] = useState('Colombo 03, Sri Lanka');
-  const [salespersonId, setSalespersonId] = useState(employees[0]?.id || 'emp-001');
   const [bikeId, setBikeId] = useState(
     initialBikeId && availableBikes.some(b => b.id === initialBikeId)
       ? initialBikeId
       : availableBikes[0]?.id || ''
   );
-  const [discountLkr, setDiscountLkr] = useState(0);
+  const [discountRequestedLkr, setDiscountRequestedLkr] = useState(0);
   const [advanceAmountLkr, setAdvanceAmountLkr] = useState(500000);
-  const [paymentRef, setPaymentRef] = useState('SL-CHQ-InitialAdvance');
-  const [isVerified, setIsVerified] = useState(true);
+  const [paymentRef, setPaymentRef] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -43,14 +41,14 @@ export const NewBookingModal: React.FC<{
       }
       setError('');
     }
-  }, [isOpen, initialBikeId, availableBikes]);
+  }, [isOpen, initialBikeId, availableBikes.length]);
 
   if (!isOpen) return null;
 
   const targetBike = bikes.find(b => b.id === bikeId);
-  const finalPrice = targetBike ? Math.max(0, targetBike.priceLkr - discountLkr) : 0;
+  const finalPrice = targetBike ? targetBike.priceLkr : 0;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customerName.trim()) {
       setError('Please provide customer name.');
@@ -65,28 +63,28 @@ export const NewBookingModal: React.FC<{
       return;
     }
     if (advanceAmountLkr > finalPrice) {
-      setError(`Advance payment cannot exceed the final price (${formatLKR(finalPrice)}).`);
+      setError(`Advance payment cannot exceed the unit price (${formatLKR(finalPrice)}).`);
       return;
     }
 
-    const res = createBooking({
+    setSubmitting(true);
+    const res = await createBooking({
       customerName: customerName.trim(),
       customerPhone: customerPhone.trim(),
-      customerNIC: customerNIC.trim() || '1990****1234',
+      customerNIC: customerNIC.trim() || 'Pending NIC',
       customerAddress: customerAddress.trim() || 'Colombo, Sri Lanka',
-      salespersonId,
       bikeId,
-      discountLkr,
+      discountRequestedLkr: Math.max(0, discountRequestedLkr),
       initialPayment:
         advanceAmountLkr > 0
           ? {
               amountLkr: advanceAmountLkr,
               type: 'Booking Advance',
-              reference: paymentRef.trim() || 'Direct Showroom Deposit',
-              isVerified,
+              reference: paymentRef.trim() || 'Counter Advance Receipt',
             }
           : undefined,
     });
+    setSubmitting(false);
 
     if (!res.success) {
       setError(res.error || 'Failed to create booking.');
@@ -101,7 +99,7 @@ export const NewBookingModal: React.FC<{
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
-      <div className="bg-[#18191d] border border-stone-700 text-stone-200 rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in duration-150">
+      <div className="bg-[#18191d] border border-stone-700 text-stone-200 rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
         <div className="px-6 py-4 border-b border-stone-800 flex items-center justify-between bg-[#151619]">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-[#9b1c1c] text-white flex items-center justify-center">
@@ -109,10 +107,10 @@ export const NewBookingModal: React.FC<{
             </div>
             <div>
               <h3 className="text-sm font-bold text-white tracking-tight">
-                Create Direct Motorcycle Booking
+                Create Motorcycle Booking
               </h3>
               <p className="text-[11px] text-stone-400">
-                Reserve available showroom inventory
+                Atomic Firestore unit allocation · Created by {currentUser?.fullName}
               </p>
             </div>
           </div>
@@ -140,7 +138,7 @@ export const NewBookingModal: React.FC<{
                 required
                 value={customerName}
                 onChange={e => setCustomerName(e.target.value)}
-                placeholder="e.g. Ruwan Weerakkody"
+                placeholder="Customer Full Name"
                 className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 focus:outline-hidden focus:border-stone-500"
               />
             </div>
@@ -156,12 +154,13 @@ export const NewBookingModal: React.FC<{
               />
             </div>
             <div>
-              <label className="block text-stone-400 mb-1 font-medium">Synthetic NIC</label>
+              <label className="block text-stone-400 mb-1 font-medium">Customer NIC *</label>
               <input
                 type="text"
+                required
                 value={customerNIC}
                 onChange={e => setCustomerNIC(e.target.value)}
-                placeholder="1992****3310"
+                placeholder="NIC Reference"
                 className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 font-mono focus:outline-hidden focus:border-stone-500"
               />
             </div>
@@ -173,12 +172,11 @@ export const NewBookingModal: React.FC<{
               type="text"
               value={customerAddress}
               onChange={e => setCustomerAddress(e.target.value)}
-              placeholder="e.g. 50 Galle Road, Colombo 03"
+              placeholder="Street, City"
               className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 focus:outline-hidden focus:border-stone-500"
             />
           </div>
 
-          {/* Available stock allocation */}
           <div>
             <label className="block text-stone-400 mb-1 font-medium flex items-center justify-between">
               <span>Select Available Stock Unit *</span>
@@ -207,31 +205,30 @@ export const NewBookingModal: React.FC<{
               <div className="mt-2 p-2.5 bg-[#121316] rounded border border-stone-800 text-[11px] flex items-center justify-between">
                 <span className="text-stone-400">Price: {formatLKR(targetBike.priceLkr)}</span>
                 <span className="font-mono text-amber-300">Engine: {targetBike.engineNumber}</span>
-                <span className="text-emerald-400 font-medium">Lock: Reserved</span>
+                <span className="text-emerald-400 font-medium">Status: Available</span>
               </div>
             )}
           </div>
 
-          {/* Pricing & Advance */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-stone-400 mb-1 font-medium">Assigned Consultant</label>
-              <select
-                value={salespersonId}
-                onChange={e => setSalespersonId(e.target.value)}
-                className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 focus:outline-hidden focus:border-stone-500"
-              >
-                {employees
-                  .filter(e => e.department === 'Sales')
-                  .map(emp => (
-                    <option key={emp.id} value={emp.id}>
-                      {emp.fullName}
-                    </option>
-                  ))}
-              </select>
+              <label className="block text-stone-400 mb-1 font-medium">
+                Requested Discount (LKR)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={finalPrice}
+                value={discountRequestedLkr}
+                onChange={e => setDiscountRequestedLkr(Number(e.target.value))}
+                className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 font-mono focus:outline-hidden focus:border-stone-500"
+              />
+              <span className="text-[10px] text-stone-500">Requires GM/Finance approval</span>
             </div>
             <div>
-              <label className="block text-stone-400 mb-1 font-medium">Booking Advance (LKR)</label>
+              <label className="block text-stone-400 mb-1 font-medium">
+                Initial Advance Receipt (LKR)
+              </label>
               <input
                 type="number"
                 min={0}
@@ -243,41 +240,40 @@ export const NewBookingModal: React.FC<{
             </div>
           </div>
 
-          <div>
-            <label className="block text-stone-400 mb-1 font-medium">Payment Reference / Cheque</label>
-            <input
-              type="text"
-              value={paymentRef}
-              onChange={e => setPaymentRef(e.target.value)}
-              placeholder="e.g. SL-CHQ-10492"
-              className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 font-mono focus:outline-hidden focus:border-stone-500"
-            />
-          </div>
+          {advanceAmountLkr > 0 && (
+            <div>
+              <label className="block text-stone-400 mb-1 font-medium">
+                Payment Reference / Slip No.
+              </label>
+              <input
+                type="text"
+                value={paymentRef}
+                onChange={e => setPaymentRef(e.target.value)}
+                placeholder="e.g. SL-CHQ-10492"
+                className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 font-mono focus:outline-hidden focus:border-stone-500"
+              />
+            </div>
+          )}
 
-          <div className="bg-[#121316] p-3 rounded-lg border border-stone-800 flex items-center justify-between">
-            <span className="text-stone-400">Auto-verify Advance with Finance:</span>
-            <input
-              type="checkbox"
-              checked={isVerified}
-              onChange={e => setIsVerified(e.target.checked)}
-              className="accent-[#9b1c1c] w-4 h-4 rounded"
-            />
+          <div className="bg-amber-950/30 border border-amber-800/60 p-2.5 rounded text-[11px] text-amber-200">
+            <strong>Controls:</strong> Initial advance payments are logged as{' '}
+            <span className="font-mono">Pending Verification</span> until verified by Finance. Any discount request stays <span className="font-mono">Pending</span> until approved by General Manager or Finance.
           </div>
 
           <div className="pt-2 border-t border-stone-800 flex items-center justify-end gap-2.5">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-stone-400 hover:text-white bg-stone-800 hover:bg-stone-700 rounded-md transition-colors"
+              className="px-4 py-2 text-stone-400 hover:text-white bg-stone-800 hover:bg-stone-700 rounded-md transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={availableBikes.length === 0}
-              className="px-5 py-2 font-semibold text-white bg-[#9b1c1c] hover:bg-[#b91c1c] disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors shadow-xs"
+              disabled={availableBikes.length === 0 || submitting}
+              className="px-5 py-2 font-semibold text-white bg-[#9b1c1c] hover:bg-[#b91c1c] disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors shadow-xs cursor-pointer"
             >
-              Create Booking
+              {submitting ? 'Reserving Unit...' : 'Create Booking & Reserve Unit'}
             </button>
           </div>
         </form>

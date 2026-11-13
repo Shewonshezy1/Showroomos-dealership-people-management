@@ -6,8 +6,8 @@
 import React, { useState } from 'react';
 import { useShowroom } from '../../context/ShowroomContext';
 import { formatLKR } from '../../utils/formatters';
-import { PaymentRecord, PaymentType } from '../../types';
-import { X, DollarSign, AlertCircle, CheckCircle } from 'lucide-react';
+import { PaymentType } from '../../types';
+import { X, DollarSign, AlertCircle } from 'lucide-react';
 
 export const AddPaymentModal: React.FC<{
   bookingId: string | null;
@@ -15,22 +15,33 @@ export const AddPaymentModal: React.FC<{
 }> = ({ bookingId, onClose }) => {
   const { bookings, addPaymentToBooking } = useShowroom();
 
-  if (!bookingId) return null;
-  const booking = bookings.find(b => b.id === bookingId);
-  if (!booking) return null;
-
-  const currentTotalPaid = booking.payments.reduce((sum, p) => sum + p.amountLkr, 0);
-  const remainingBalance = Math.max(0, booking.finalPriceLkr - currentTotalPaid);
+  const booking = bookingId ? bookings.find(b => b.id === bookingId) : undefined;
+  const currentTotalActive = booking
+    ? booking.payments
+        .filter(p => p.entryType !== 'REVERSAL' && p.status !== 'Reversed')
+        .reduce((sum, p) => sum + p.amountLkr, 0)
+    : 0;
+  const remainingBalance = booking ? Math.max(0, booking.finalPriceLkr - currentTotalActive) : 0;
 
   const [amountLkr, setAmountLkr] = useState<number>(
     remainingBalance > 0 ? Math.min(500000, remainingBalance) : 0
   );
   const [paymentType, setPaymentType] = useState<PaymentType>('Down Payment');
-  const [reference, setReference] = useState('SL-TRF-OnlineTransfer');
-  const [isVerified, setIsVerified] = useState<boolean>(true);
+  const [reference, setReference] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  React.useEffect(() => {
+    if (booking) {
+      setAmountLkr(remainingBalance > 0 ? Math.min(500000, remainingBalance) : 0);
+      setReference('');
+      setError('');
+    }
+  }, [bookingId]);
+
+  if (!bookingId || !booking) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (amountLkr <= 0) {
       setError('Payment amount must be greater than zero.');
@@ -38,19 +49,24 @@ export const AddPaymentModal: React.FC<{
     }
     if (amountLkr > remainingBalance) {
       setError(
-        `Overpayment blocked: The maximum outstanding balance is ${formatLKR(
+        `Overpayment blocked: Remaining uncollected balance is ${formatLKR(
           remainingBalance
         )}. Cannot record ${formatLKR(amountLkr)}.`
       );
       return;
     }
+    if (!reference.trim()) {
+      setError('Please enter a bank/cheque/receipt reference.');
+      return;
+    }
 
-    const res = addPaymentToBooking(booking.id, {
+    setSubmitting(true);
+    const res = await addPaymentToBooking(booking.id, {
       amountLkr,
       type: paymentType,
-      reference: reference.trim() || 'Bank Transfer',
-      isVerified,
+      reference: reference.trim(),
     });
+    setSubmitting(false);
 
     if (!res.success) {
       setError(res.error || 'Payment failed.');
@@ -69,7 +85,7 @@ export const AddPaymentModal: React.FC<{
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
-      <div className="bg-[#18191d] border border-stone-700 text-stone-200 rounded-xl shadow-2xl max-w-md w-full overflow-hidden animate-in fade-in duration-150">
+      <div className="bg-[#18191d] border border-stone-700 text-stone-200 rounded-xl shadow-2xl max-w-md w-full overflow-hidden">
         <div className="px-5 py-4 border-b border-stone-800 flex items-center justify-between bg-[#151619]">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-emerald-950/80 border border-emerald-800 text-emerald-400 flex items-center justify-center">
@@ -77,7 +93,7 @@ export const AddPaymentModal: React.FC<{
             </div>
             <div>
               <h3 className="text-sm font-bold text-white tracking-tight">
-                Record Payment / Collection
+                Log Customer Payment Receipt
               </h3>
               <p className="text-[11px] text-stone-400 font-mono">
                 Booking: {booking.id} ({booking.customerName})
@@ -100,7 +116,6 @@ export const AddPaymentModal: React.FC<{
             </div>
           )}
 
-          {/* Balance Context */}
           <div className="bg-[#121316] p-3 rounded-lg border border-stone-800 flex items-center justify-between">
             <div>
               <span className="text-[10px] text-stone-400 uppercase font-semibold block">
@@ -112,7 +127,7 @@ export const AddPaymentModal: React.FC<{
             </div>
             <div className="text-right">
               <span className="text-[10px] text-amber-400 uppercase font-semibold block">
-                Unsettled Balance
+                Remaining Receivable
               </span>
               <span className="font-mono font-bold text-amber-300 text-sm">
                 {formatLKR(remainingBalance)}
@@ -134,14 +149,11 @@ export const AddPaymentModal: React.FC<{
               <button
                 type="button"
                 onClick={() => setAmountLkr(remainingBalance)}
-                className="absolute right-2 top-2 text-[10px] bg-stone-800 text-stone-300 hover:text-white px-2 py-0.5 rounded border border-stone-700 font-semibold"
+                className="absolute right-2 top-2 text-[10px] bg-stone-800 text-stone-300 hover:text-white px-2 py-0.5 rounded border border-stone-700 font-semibold cursor-pointer"
               >
                 Pay Full Balance
               </button>
             </div>
-            <span className="text-[10px] text-stone-500 mt-1 block">
-              System enforces strict validation against overpayment.
-            </span>
           </div>
 
           <div>
@@ -161,51 +173,37 @@ export const AddPaymentModal: React.FC<{
 
           <div>
             <label className="block text-stone-400 mb-1 font-medium">
-              Bank / Cheque / Transaction Ref *
+              Bank / Cheque / Slip Reference *
             </label>
             <input
               type="text"
               required
               value={reference}
               onChange={e => setReference(e.target.value)}
-              placeholder="e.g. SL-CHQ-44910 (HNB Bank)"
+              placeholder="e.g. SL-TRF-882910"
               className="w-full bg-[#121316] border border-stone-700 rounded-md px-3 py-2 text-stone-100 font-mono focus:outline-hidden focus:border-stone-500"
             />
           </div>
 
-          {/* Verification Option */}
-          <div className="bg-[#121316] p-3 rounded-lg border border-stone-800 flex items-start gap-3">
-            <input
-              type="checkbox"
-              id="verifyNow"
-              checked={isVerified}
-              onChange={e => setIsVerified(e.target.checked)}
-              className="mt-0.5 accent-[#9b1c1c] rounded"
-            />
-            <label htmlFor="verifyNow" className="cursor-pointer">
-              <span className="font-semibold text-stone-200 block text-xs">
-                Mark Verified Immediately (Finance Authorization)
-              </span>
-              <span className="text-[11px] text-stone-400">
-                If checked, amount is added to "Verified Collections" right away. If unchecked, it stays "Pending Verification" until verified in the booking drawer.
-              </span>
-            </label>
+          <div className="bg-amber-950/30 p-3 rounded-lg border border-amber-800/50 text-[11px] text-amber-200">
+            <strong>Finance Control:</strong> All logged receipts enter as{' '}
+            <span className="font-mono">Pending Verification</span>. Verified collections and delivery clearance update only after independent Finance verification.
           </div>
 
           <div className="pt-2 border-t border-stone-800 flex items-center justify-end gap-2.5">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-stone-400 hover:text-white bg-stone-800 hover:bg-stone-700 rounded-md transition-colors"
+              className="px-4 py-2 text-stone-400 hover:text-white bg-stone-800 hover:bg-stone-700 rounded-md transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={remainingBalance === 0}
-              className="px-5 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors shadow-xs"
+              disabled={remainingBalance === 0 || submitting}
+              className="px-5 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors shadow-xs cursor-pointer"
             >
-              Record Payment
+              {submitting ? 'Submitting...' : 'Log Unverified Receipt'}
             </button>
           </div>
         </form>

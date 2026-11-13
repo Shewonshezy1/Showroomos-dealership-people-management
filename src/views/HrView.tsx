@@ -25,6 +25,7 @@ import {
 
 export const HrView: React.FC = () => {
   const {
+    can,
     employees,
     leaveRequests,
     updateLeaveRequestStatus,
@@ -32,6 +33,11 @@ export const HrView: React.FC = () => {
     markAttendance,
     metrics,
   } = useShowroom();
+
+  const canReadPayroll = can('hr.payroll.read');
+  const canDecideLeaves = can('hr.leaves.decide');
+  const canWriteAttendance = can('hr.attendance.write');
+  const canReadDirectory = can('hr.directory.read');
 
   const [activeTab, setActiveTab] = useState<'leaves' | 'directory' | 'payroll'>('leaves');
   const [departmentFilter, setDepartmentFilter] = useState('All');
@@ -80,26 +86,30 @@ export const HrView: React.FC = () => {
           >
             Leave Requests ({leaveRequests.filter(l => l.status === 'Pending').length} Pending)
           </button>
-          <button
-            onClick={() => setActiveTab('directory')}
-            className={`px-3 py-1.5 font-medium rounded-md transition-colors ${
-              activeTab === 'directory'
-                ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
-                : 'text-stone-400 hover:text-stone-200'
-            }`}
-          >
-            Staff Directory ({employees.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('payroll')}
-            className={`px-3 py-1.5 font-medium rounded-md transition-colors ${
-              activeTab === 'payroll'
-                ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
-                : 'text-stone-400 hover:text-stone-200'
-            }`}
-          >
-            Attendance & Illustrative Payroll
-          </button>
+          {canReadDirectory && (
+            <button
+              onClick={() => setActiveTab('directory')}
+              className={`px-3 py-1.5 font-medium rounded-md transition-colors ${
+                activeTab === 'directory'
+                  ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              Staff Directory ({employees.length})
+            </button>
+          )}
+          {canReadPayroll && (
+            <button
+              onClick={() => setActiveTab('payroll')}
+              className={`px-3 py-1.5 font-medium rounded-md transition-colors ${
+                activeTab === 'payroll'
+                  ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              Attendance & Illustrative Payroll
+            </button>
+          )}
         </div>
       </div>
 
@@ -192,25 +202,27 @@ export const HrView: React.FC = () => {
                       </td>
 
                       <td className="py-3.5 px-4 text-right">
-                        {isPending ? (
+                        {isPending && canDecideLeaves ? (
                           <div className="flex items-center justify-end gap-1.5">
                             <button
                               onClick={() => updateLeaveRequestStatus(req.id, 'Approved')}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-emerald-800 hover:bg-emerald-700 text-white text-[11px] font-semibold rounded shadow-xs transition-colors"
+                              className="flex items-center gap-1 px-2.5 py-1 bg-emerald-800 hover:bg-emerald-700 text-white text-[11px] font-semibold rounded shadow-xs transition-colors cursor-pointer"
                             >
                               <Check className="w-3 h-3" />
                               <span>Approve</span>
                             </button>
                             <button
                               onClick={() => updateLeaveRequestStatus(req.id, 'Rejected')}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-rose-900/80 hover:bg-rose-800 text-rose-200 text-[11px] font-semibold rounded transition-colors"
+                              className="flex items-center gap-1 px-2.5 py-1 bg-rose-900/80 hover:bg-rose-800 text-rose-200 text-[11px] font-semibold rounded transition-colors cursor-pointer"
                             >
                               <X className="w-3 h-3" />
                               <span>Reject</span>
                             </button>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-stone-500 italic">Settled</span>
+                          <span className="text-[11px] text-stone-500 italic">
+                            {isPending ? 'Pending HR/GM' : 'Settled'}
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -292,8 +304,13 @@ export const HrView: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 3: ATTENDANCE & ILLUSTRATIVE PAYROLL */}
-      {activeTab === 'payroll' && (
+      {/* TAB 3: ATTENDANCE & ILLUSTRATIVE PAYROLL (Strictly HR Role Only) */}
+      {activeTab === 'payroll' && !canReadPayroll && (
+        <div className="bg-[#18191d] border border-rose-900/60 p-6 rounded-xl text-xs text-rose-200">
+          Access Restricted: Payroll & compensation records are limited exclusively to the HR & People Ops role.
+        </div>
+      )}
+      {activeTab === 'payroll' && canReadPayroll && (
         <div className="space-y-5">
           {/* Statutory Disclaimer Box */}
           <div className="bg-[#18191d] border border-amber-800/80 bg-amber-950/20 p-4 rounded-xl text-xs text-amber-200 flex items-start gap-3">
@@ -303,7 +320,7 @@ export const HrView: React.FC = () => {
                 Illustrative Payroll — Not Statutory Payroll
               </span>
               <p className="text-stone-300 leading-relaxed">
-                This screen demonstrates illustrative salary components for showroom staff presentation. It does not calculate statutory Sri Lankan taxes, EPF (Employee Provident Fund), ETF (Employee Trust Fund), or legal deductions.
+                This screen displays illustrative salary components stored in the HR-restricted employees_payroll collection. It does not calculate statutory Sri Lankan taxes, EPF, ETF, or legal deductions.
               </p>
             </div>
           </div>
@@ -317,7 +334,7 @@ export const HrView: React.FC = () => {
                     Today's Showroom Attendance
                   </h3>
                   <p className="text-xs text-stone-400">
-                    Live floor clock-in records for Colombo flagship
+                    Daily floor attendance records for Colombo flagship
                   </p>
                 </div>
                 <span className="font-mono text-xs text-amber-300">
@@ -344,6 +361,7 @@ export const HrView: React.FC = () => {
                         return (
                           <button
                             key={st}
+                            disabled={!canWriteAttendance}
                             onClick={() => markAttendance(rec.employeeId, st)}
                             className={`px-2 py-0.5 text-[10px] font-semibold rounded transition-colors ${
                               isCurrent

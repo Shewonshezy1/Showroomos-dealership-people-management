@@ -1,0 +1,736 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // Global Helpers
+    // ------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-.@]+$');
+    }
+
+    function isBootstrapOwnerEmail() {
+      return isSignedIn() && request.auth.token.email == 'shewonshezy12@gmail.com';
+    }
+
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveStaff() {
+      return isSignedIn() && userDocExists() && currentUserDoc().disabled == false;
+    }
+
+    function hasRole(r) {
+      return isActiveStaff() && currentUserDoc().role == r;
+    }
+
+    function hasAnyRole(roles) {
+      return isActiveStaff() && (currentUserDoc().role in roles);
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidRoleName(r) {
+      return r is string && r.size() <= 32 && r in ['admin', 'general_manager', 'sales', 'finance', 'hr', 'service', 'stock'];
+    }
+
+    // ------------------------------------------------------------------
+    // Connection Health Test Collection
+    // ------------------------------------------------------------------
+    match /test/{docId} {
+      allow get: if isSignedIn() && isValidId(docId);
+    }
+
+    // ------------------------------------------------------------------
+    // 1. /users/{userId} - Staff Account & Role Assignments
+    // ------------------------------------------------------------------
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'fullName', 'role', 'disabled', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'fullName', 'role', 'designation', 'department', 'branch', 'disabled', 'invitedBy', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && isValidRoleName(data.role)
+        && data.disabled is bool
+        && (!('designation' in data) || (data.designation is string && data.designation.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('branch' in data) || (data.branch is string && data.branch.size() <= 80))
+        && (!('invitedBy' in data) || (data.invitedBy is string && data.invitedBy.size() <= 160))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || hasAnyRole(['admin', 'general_manager', 'hr']));
+      allow list: if hasAnyRole(['admin', 'general_manager', 'hr']);
+
+      // Bootstrap owner first-time admin activation OR invited staff first-time activation
+      allow create: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(userId) && isBootstrapOwnerEmail() && incoming().email == request.auth.token.email && incoming().role == 'admin' && incoming().disabled == false)
+          ||
+          (
+            isOwner(userId)
+            && incoming().email == request.auth.token.email
+            && incoming().disabled == false
+            && exists(/databases/$(database)/documents/staff_invites/$(request.auth.token.email))
+            && get(/databases/$(database)/documents/staff_invites/$(request.auth.token.email)).data.status == 'Pending'
+            && get(/databases/$(database)/documents/staff_invites/$(request.auth.token.email)).data.role == incoming().role
+          )
+          ||
+          hasRole('admin')
+        );
+
+      // Only Admin can change role or disabled status; users CANNOT self-promote or re-enable themselves
+      allow update: if isValidId(userId) && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && hasRole('admin')
+        && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'disabled', 'designation', 'department', 'branch', 'fullName', 'updatedAt']);
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 2. /staff_directory/{userId} - Non-PII Display Directory
+    // ------------------------------------------------------------------
+    function isValidStaffDir(data) {
+      return data.keys().hasAll(['uid', 'fullName', 'role', 'active', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'fullName', 'role', 'designation', 'department', 'active', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && isValidRoleName(data.role)
+        && data.active is bool
+        && (!('designation' in data) || (data.designation is string && data.designation.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && data.updatedAt is timestamp;
+    }
+
+    match /staff_directory/{userId} {
+      allow get: if isValidId(userId) && isActiveStaff();
+      allow list: if isActiveStaff();
+      allow create, update: if isValidId(userId) && isValidStaffDir(incoming())
+        && incoming().updatedAt == request.time
+        && (hasRole('admin') || (isOwner(userId) && isSignedIn() && existsAfter(/databases/$(database)/documents/users/$(userId)) && getAfter(/databases/$(database)/documents/users/$(userId)).data.role == incoming().role));
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 3. /staff_invites/{inviteId} - Admin-Issued Staff Invitations
+    // ------------------------------------------------------------------
+    function isValidInvite(data) {
+      return data.keys().hasAll(['email', 'fullName', 'role', 'status', 'invitedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'fullName', 'role', 'designation', 'department', 'branch', 'status', 'invitedByUid', 'createdAt', 'updatedAt'])
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && isValidRoleName(data.role)
+        && data.status is string && data.status in ['Pending', 'Accepted', 'Revoked']
+        && data.invitedByUid is string && data.invitedByUid.size() <= 128
+        && (!('designation' in data) || (data.designation is string && data.designation.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('branch' in data) || (data.branch is string && data.branch.size() <= 80))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /staff_invites/{inviteId} {
+      allow get: if isValidId(inviteId) && (hasRole('admin') || (isSignedIn() && request.auth.token.email == inviteId));
+      allow list: if hasRole('admin');
+      allow create: if isValidId(inviteId) && isValidInvite(incoming())
+        && incoming().email == inviteId
+        && incoming().status == 'Pending'
+        && incoming().invitedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && hasRole('admin');
+      allow update: if isValidId(inviteId) && isValidInvite(incoming())
+        && incoming().email == existing().email
+        && incoming().invitedByUid == existing().invitedByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (hasRole('admin') && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'role', 'designation', 'department', 'branch', 'fullName', 'updatedAt']))
+          ||
+          (isSignedIn() && request.auth.token.email == inviteId && existing().status == 'Pending' && incoming().status == 'Accepted'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)))
+        );
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 4. /leads/{leadId} - CRM Leads
+    // ------------------------------------------------------------------
+    function isValidLead(data) {
+      return data.keys().hasAll(['customerName', 'phone', 'modelInterest', 'status', 'createdAt', 'updatedAt', 'createdByUid'])
+        && data.keys().hasOnly(['customerName', 'phone', 'email', 'city', 'modelInterest', 'colorPreference', 'salespersonId', 'salespersonName', 'source', 'status', 'priority', 'budgetLkr', 'lostReason', 'callLogs', 'nextFollowUpDate', 'notes', 'bookingId', 'createdAt', 'updatedAt', 'createdByUid'])
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 30
+        && data.modelInterest is string && data.modelInterest.size() >= 1 && data.modelInterest.size() <= 100
+        && data.status is string && data.status in ['New', 'Contacted', 'Test Ride', 'Quoted', 'Booked', 'Closed', 'Lost']
+        && (!('priority' in data) || (data.priority is string && data.priority in ['Hot', 'Warm', 'Cold']))
+        && (!('email' in data) || (data.email is string && data.email.size() <= 160))
+        && (!('city' in data) || (data.city is string && data.city.size() <= 80))
+        && (!('colorPreference' in data) || (data.colorPreference is string && data.colorPreference.size() <= 80))
+        && (!('salespersonId' in data) || (data.salespersonId is string && data.salespersonId.size() <= 128))
+        && (!('salespersonName' in data) || (data.salespersonName is string && data.salespersonName.size() <= 120))
+        && (!('source' in data) || (data.source is string && data.source.size() <= 60))
+        && (!('lostReason' in data) || (data.lostReason is string && data.lostReason.size() <= 300))
+        && (!('nextFollowUpDate' in data) || (data.nextFollowUpDate is string && data.nextFollowUpDate.size() <= 30))
+        && (!('bookingId' in data) || (data.bookingId is string && data.bookingId.size() <= 128))
+        && (!('notes' in data) || (data.notes is list && data.notes.size() <= 100))
+        && (!('callLogs' in data) || (data.callLogs is list && data.callLogs.size() <= 100))
+        && (!('budgetLkr' in data) || (data.budgetLkr is number && data.budgetLkr >= 0))
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.createdByUid is string && data.createdByUid.size() <= 128
+        && data.updatedAt is timestamp;
+    }
+
+    match /leads/{leadId} {
+      allow get: if isValidId(leadId) && hasAnyRole(['general_manager', 'sales']);
+      allow list: if hasAnyRole(['general_manager', 'sales']);
+      allow create: if isValidId(leadId) && isValidLead(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'sales']);
+      allow update: if isValidId(leadId) && isValidLead(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          hasAnyRole(['general_manager', 'sales'])
+          ||
+          (hasRole('finance') && incoming().status == 'Booked' && incoming().bookingId is string
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'bookingId', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 5. /bikes/{bikeId} - Motorcycle Inventory
+    // ------------------------------------------------------------------
+    function isValidBike(data) {
+      return data.keys().hasAll(['model', 'chassisNumber', 'engineNumber', 'priceLkr', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['model', 'variant', 'colour', 'chassisNumber', 'engineNumber', 'year', 'location', 'priceLkr', 'status', 'imageKey', 'imageUrl', 'allocatedBookingId', 'arrivalDate', 'displacementCc', 'powerBhp', 'updatedAt'])
+        && data.model is string && data.model.size() >= 1 && data.model.size() <= 100
+        && data.chassisNumber is string && data.chassisNumber.size() >= 5 && data.chassisNumber.size() <= 60
+        && data.engineNumber is string && data.engineNumber.size() >= 5 && data.engineNumber.size() <= 60
+        && data.priceLkr is number && data.priceLkr > 0
+        && data.status is string && data.status in ['Available', 'Reserved', 'Demo', 'Delivered']
+        && (!('variant' in data) || (data.variant is string && data.variant.size() <= 100))
+        && (!('colour' in data) || (data.colour is string && data.colour.size() <= 80))
+        && (!('location' in data) || (data.location is string && data.location.size() <= 80))
+        && (!('imageKey' in data) || (data.imageKey is string && data.imageKey.size() <= 80))
+        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 500))
+        && (!('allocatedBookingId' in data) || data.allocatedBookingId == null || (data.allocatedBookingId is string && data.allocatedBookingId.size() <= 128))
+        && (!('arrivalDate' in data) || (data.arrivalDate is string && data.arrivalDate.size() <= 30))
+        && (!('powerBhp' in data) || (data.powerBhp is string && data.powerBhp.size() <= 40))
+        && (!('year' in data) || (data.year is number && data.year >= 1990 && data.year <= 2100))
+        && (!('displacementCc' in data) || (data.displacementCc is number && data.displacementCc > 0))
+        && data.updatedAt is timestamp;
+    }
+
+    match /bikes/{bikeId} {
+      allow get: if isValidId(bikeId) && isActiveStaff();
+      allow list: if isActiveStaff();
+      allow create: if isValidId(bikeId) && isValidBike(incoming())
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'stock']);
+      allow update: if isValidId(bikeId) && isValidBike(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          (hasAnyRole(['general_manager', 'stock']) && existing().status != 'Delivered')
+          ||
+          (hasAnyRole(['general_manager', 'sales', 'finance'])
+            && existing().status == 'Available'
+            && incoming().status == 'Reserved'
+            && incoming().allocatedBookingId is string
+            && existsAfter(/databases/$(database)/documents/bookings/$(incoming().allocatedBookingId))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'allocatedBookingId', 'updatedAt']))
+          ||
+          (hasAnyRole(['general_manager', 'sales', 'finance'])
+            && existing().status == 'Reserved'
+            && incoming().status == 'Available'
+            && incoming().allocatedBookingId == null
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'allocatedBookingId', 'updatedAt']))
+          ||
+          (hasAnyRole(['general_manager', 'service'])
+            && existing().status == 'Reserved'
+            && incoming().status == 'Delivered'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 6. /bookings/{bookingId} - Customer Bookings
+    // ------------------------------------------------------------------
+    function isValidBooking(data) {
+      return data.keys().hasAll(['customerName', 'customerPhone', 'bikeId', 'totalPriceLkr', 'discountLkr', 'accessoriesTotalLkr', 'tradeInCreditLkr', 'finalPriceLkr', 'verifiedPaidLkr', 'balanceLkr', 'status', 'createdByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'customerName', 'customerPhone', 'customerNIC', 'customerAddress', 'salespersonId', 'salespersonName', 'bikeId', 'bikeModel', 'bikeColour', 'bikeChassis', 'bikeEngine', 'totalPriceLkr', 'discountRequestedLkr', 'discountLkr', 'discountStatus', 'discountApprovedByUid', 'accessories', 'accessoriesTotalLkr', 'tradeInCreditLkr', 'appliedTradeInId', 'finalPriceLkr', 'verifiedPaidLkr', 'balanceLkr', 'payments', 'status', 'deliveryChecklist', 'deliveredAt', 'deliveredBy', 'cancellationReason', 'timeline', 'leadId', 'requestId', 'createdByUid', 'createdAt', 'updatedAt'])
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && data.customerPhone is string && data.customerPhone.size() >= 5 && data.customerPhone.size() <= 30
+        && data.bikeId is string && data.bikeId.size() >= 1 && data.bikeId.size() <= 128
+        && data.totalPriceLkr is number && data.totalPriceLkr >= 0
+        && data.discountLkr is number && data.discountLkr >= 0
+        && data.accessoriesTotalLkr is number && data.accessoriesTotalLkr >= 0
+        && data.tradeInCreditLkr is number && data.tradeInCreditLkr >= 0
+        && data.finalPriceLkr is number && data.finalPriceLkr >= 0
+        && data.verifiedPaidLkr is number && data.verifiedPaidLkr >= 0
+        && data.balanceLkr is number && data.balanceLkr >= 0
+        && data.status is string && data.status in ['Confirmed', 'Delivered', 'Cancelled']
+        && data.createdByUid is string && data.createdByUid.size() <= 128
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && (!('discountRequestedLkr' in data) || (data.discountRequestedLkr is number && data.discountRequestedLkr >= 0))
+        && (!('discountStatus' in data) || (data.discountStatus is string && data.discountStatus in ['None', 'Pending', 'Approved', 'Rejected']))
+        && (!('accessories' in data) || (data.accessories is list && data.accessories.size() <= 30))
+        && (!('payments' in data) || (data.payments is list && data.payments.size() <= 100))
+        && (!('timeline' in data) || (data.timeline is list && data.timeline.size() <= 100))
+        && (!('deliveryChecklist' in data) || data.deliveryChecklist is map)
+        && data.updatedAt is timestamp;
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && hasAnyRole(['general_manager', 'sales', 'finance', 'service', 'stock']);
+      allow list: if hasAnyRole(['general_manager', 'sales', 'finance', 'service', 'stock']);
+
+      // Creation: Sales CANNOT approve their own discounts or forge verifiedPaidLkr > 0
+      allow create: if isValidId(bookingId) && isValidBooking(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().status == 'Confirmed'
+        && incoming().verifiedPaidLkr == 0
+        && incoming().discountLkr == 0
+        && incoming().tradeInCreditLkr == 0
+        && incoming().accessoriesTotalLkr == 0
+        && incoming().finalPriceLkr == get(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.priceLkr
+        && incoming().balanceLkr == incoming().finalPriceLkr
+        && (!('discountStatus' in incoming()) || incoming().discountStatus in ['None', 'Pending'])
+        && hasAnyRole(['general_manager', 'sales', 'finance'])
+        && exists(/databases/$(database)/documents/bikes/$(incoming().bikeId))
+        && get(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.status == 'Available'
+        && getAfter(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.status == 'Reserved'
+        && getAfter(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.allocatedBookingId == bookingId;
+
+      allow update: if isValidId(bookingId) && isValidBooking(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().bikeId == existing().bikeId
+        && incoming().totalPriceLkr == existing().totalPriceLkr
+        && incoming().updatedAt == request.time
+        && existing().status == 'Confirmed'
+        && (
+          // Finance payment recording/verification/reversal recalculating verifiedPaidLkr & balanceLkr
+          (hasRole('finance')
+            && incoming().balanceLkr == (existing().finalPriceLkr > incoming().verifiedPaidLkr ? existing().finalPriceLkr - incoming().verifiedPaidLkr : 0)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['payments', 'verifiedPaidLkr', 'balanceLkr', 'deliveryChecklist', 'timeline', 'updatedAt']))
+          ||
+          // Sales recording unverified payment receipt without altering verifiedPaidLkr or balanceLkr
+          (hasRole('sales')
+            && incoming().verifiedPaidLkr == existing().verifiedPaidLkr
+            && incoming().balanceLkr == existing().balanceLkr
+            && incoming().diff(existing()).affectedKeys().hasOnly(['payments', 'timeline', 'updatedAt']))
+          ||
+          // GM / Finance approving or rejecting discount
+          (hasAnyRole(['general_manager', 'finance'])
+            && incoming().finalPriceLkr == (existing().totalPriceLkr - incoming().discountLkr + existing().accessoriesTotalLkr - existing().tradeInCreditLkr)
+            && incoming().balanceLkr == (incoming().finalPriceLkr > existing().verifiedPaidLkr ? incoming().finalPriceLkr - existing().verifiedPaidLkr : 0)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['discountLkr', 'discountStatus', 'discountApprovedByUid', 'finalPriceLkr', 'balanceLkr', 'timeline', 'updatedAt']))
+          ||
+          // GM / Finance applying an ALREADY APPROVED trade-in
+          (hasAnyRole(['general_manager', 'finance'])
+            && incoming().appliedTradeInId is string
+            && exists(/databases/$(database)/documents/trade_ins/$(incoming().appliedTradeInId))
+            && get(/databases/$(database)/documents/trade_ins/$(incoming().appliedTradeInId)).data.status == 'Approved'
+            && incoming().tradeInCreditLkr == get(/databases/$(database)/documents/trade_ins/$(incoming().appliedTradeInId)).data.estimatedValuationLkr
+            && incoming().finalPriceLkr == (existing().totalPriceLkr - existing().discountLkr + existing().accessoriesTotalLkr - incoming().tradeInCreditLkr)
+            && incoming().balanceLkr == (incoming().finalPriceLkr > existing().verifiedPaidLkr ? incoming().finalPriceLkr - existing().verifiedPaidLkr : 0)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['tradeInCreditLkr', 'appliedTradeInId', 'finalPriceLkr', 'balanceLkr', 'timeline', 'updatedAt']))
+          ||
+          // Sales / Stock attaching or removing accessories (cannot modify discount, tradeIn, or verifiedPaidLkr)
+          (hasAnyRole(['general_manager', 'sales', 'stock'])
+            && incoming().finalPriceLkr == (existing().totalPriceLkr - existing().discountLkr + incoming().accessoriesTotalLkr - existing().tradeInCreditLkr)
+            && incoming().balanceLkr == (incoming().finalPriceLkr > existing().verifiedPaidLkr ? incoming().finalPriceLkr - existing().verifiedPaidLkr : 0)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accessories', 'accessoriesTotalLkr', 'finalPriceLkr', 'balanceLkr', 'timeline', 'updatedAt']))
+          ||
+          // Service / GM updating PDI checklist (NOT paymentVerified!)
+          (hasAnyRole(['general_manager', 'service'])
+            && incoming().deliveryChecklist.paymentVerified == existing().deliveryChecklist.paymentVerified
+            && incoming().diff(existing()).affectedKeys().hasOnly(['deliveryChecklist', 'timeline', 'updatedAt']))
+          ||
+          // Delivery completion gate (strictly requires balanceLkr == 0 and all checklist flags true)
+          (hasAnyRole(['general_manager', 'service'])
+            && incoming().status == 'Delivered'
+            && existing().balanceLkr == 0
+            && existing().verifiedPaidLkr >= existing().finalPriceLkr
+            && existing().deliveryChecklist.paymentVerified == true
+            && existing().deliveryChecklist.documentsChecked == true
+            && existing().deliveryChecklist.pdiCompleted == true
+            && getAfter(/databases/$(database)/documents/bikes/$(existing().bikeId)).data.status == 'Delivered'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'deliveredAt', 'deliveredBy', 'timeline', 'updatedAt']))
+          ||
+          // Booking cancellation releasing reserved bike
+          (hasAnyRole(['general_manager', 'sales', 'finance'])
+            && incoming().status == 'Cancelled'
+            && getAfter(/databases/$(database)/documents/bikes/$(existing().bikeId)).data.status == 'Available'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancellationReason', 'timeline', 'updatedAt']))
+        );
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 7. /payments/{paymentId} - Immutable Financial Ledger
+    // ------------------------------------------------------------------
+    function isValidPayment(data) {
+      return data.keys().hasAll(['bookingId', 'requestId', 'entryType', 'amountLkr', 'type', 'reference', 'isVerified', 'recordedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['bookingId', 'requestId', 'entryType', 'reversesPaymentId', 'reversedByPaymentId', 'amountLkr', 'type', 'reference', 'date', 'isVerified', 'verifiedBy', 'verifiedByUid', 'verifiedAt', 'recordedByUid', 'notes', 'createdAt', 'updatedAt'])
+        && data.bookingId is string && data.bookingId.size() >= 1 && data.bookingId.size() <= 128
+        && data.requestId is string && data.requestId.size() >= 4 && data.requestId.size() <= 128
+        && data.entryType is string && data.entryType in ['PAYMENT', 'REVERSAL']
+        && data.amountLkr is number
+        && data.type is string && data.type.size() <= 60
+        && data.reference is string && data.reference.size() >= 2 && data.reference.size() <= 100
+        && data.isVerified is bool
+        && data.recordedByUid is string && data.recordedByUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && hasAnyRole(['general_manager', 'sales', 'finance']);
+      allow list: if hasAnyRole(['general_manager', 'sales', 'finance']);
+
+      allow create: if isValidId(paymentId) && isValidPayment(incoming())
+        && incoming().recordedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/bookings/$(incoming().bookingId))
+        && (
+          (hasRole('sales')
+            && incoming().entryType == 'PAYMENT'
+            && incoming().amountLkr > 0
+            && incoming().amountLkr <= get(/databases/$(database)/documents/bookings/$(incoming().bookingId)).data.balanceLkr
+            && incoming().isVerified == false)
+          ||
+          (hasRole('finance') && (
+            (incoming().entryType == 'PAYMENT'
+              && incoming().amountLkr > 0
+              && incoming().amountLkr <= get(/databases/$(database)/documents/bookings/$(incoming().bookingId)).data.balanceLkr)
+            ||
+            (incoming().entryType == 'REVERSAL'
+              && incoming().amountLkr < 0
+              && incoming().isVerified == true
+              && incoming().reversesPaymentId is string)
+          ))
+        );
+
+      allow update: if isValidId(paymentId) && isValidPayment(incoming())
+        && incoming().bookingId == existing().bookingId
+        && incoming().requestId == existing().requestId
+        && incoming().entryType == existing().entryType
+        && incoming().amountLkr == existing().amountLkr
+        && incoming().reference == existing().reference
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && hasRole('finance')
+        && (
+          (existing().isVerified == false && incoming().isVerified == true && incoming().diff(existing()).affectedKeys().hasOnly(['isVerified', 'verifiedBy', 'verifiedByUid', 'verifiedAt', 'updatedAt']))
+          ||
+          (!('reversedByPaymentId' in existing()) && incoming().reversedByPaymentId is string && incoming().diff(existing()).affectedKeys().hasOnly(['reversedByPaymentId', 'updatedAt']))
+        );
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 8. /accessories/{accessoryId} - Genuine Parts & Gear Inventory
+    // ------------------------------------------------------------------
+    function isValidAccessory(data) {
+      return data.keys().hasAll(['partNumber', 'name', 'priceLkr', 'stockQuantity', 'updatedAt'])
+        && data.keys().hasOnly(['partNumber', 'name', 'category', 'compatibleModels', 'priceLkr', 'stockQuantity', 'description', 'imageIcon', 'updatedAt'])
+        && data.partNumber is string && data.partNumber.size() >= 2 && data.partNumber.size() <= 60
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 140
+        && data.priceLkr is number && data.priceLkr >= 0
+        && data.stockQuantity is number && data.stockQuantity >= 0
+        && (!('category' in data) || (data.category is string && data.category.size() <= 60))
+        && (!('description' in data) || (data.description is string && data.description.size() <= 400))
+        && (!('imageIcon' in data) || (data.imageIcon is string && data.imageIcon.size() <= 40))
+        && (!('compatibleModels' in data) || (data.compatibleModels is list && data.compatibleModels.size() <= 20))
+        && data.updatedAt is timestamp;
+    }
+
+    match /accessories/{accessoryId} {
+      allow get: if isValidId(accessoryId) && isActiveStaff();
+      allow list: if isActiveStaff();
+      allow create: if isValidId(accessoryId) && isValidAccessory(incoming())
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'stock']);
+      allow update: if isValidId(accessoryId) && isValidAccessory(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          hasAnyRole(['general_manager', 'stock'])
+          ||
+          (hasAnyRole(['sales', 'finance']) && incoming().diff(existing()).affectedKeys().hasOnly(['stockQuantity', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 9. /test_rides/{testRideId}
+    // ------------------------------------------------------------------
+    function isValidTestRide(data) {
+      return data.keys().hasAll(['customerName', 'customerPhone', 'licenseNumber', 'model', 'status', 'createdByUid', 'updatedAt'])
+        && data.keys().hasOnly(['leadId', 'customerName', 'customerPhone', 'licenseNumber', 'model', 'demoBikeChassis', 'scheduledDate', 'timeSlot', 'route', 'salespersonName', 'status', 'feedbackRating', 'feedbackNotes', 'convertedToLeadId', 'createdByUid', 'updatedAt'])
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && data.customerPhone is string && data.customerPhone.size() >= 5 && data.customerPhone.size() <= 30
+        && data.licenseNumber is string && data.licenseNumber.size() >= 3 && data.licenseNumber.size() <= 40
+        && data.model is string && data.model.size() <= 100
+        && data.status is string && data.status in ['Scheduled', 'Completed', 'Cancelled', 'No Show']
+        && data.createdByUid is string && data.createdByUid.size() <= 128
+        && data.updatedAt is timestamp;
+    }
+
+    match /test_rides/{testRideId} {
+      allow get: if isValidId(testRideId) && hasAnyRole(['general_manager', 'sales', 'service']);
+      allow list: if hasAnyRole(['general_manager', 'sales', 'service']);
+      allow create: if isValidId(testRideId) && isValidTestRide(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'sales']);
+      allow update: if isValidId(testRideId) && isValidTestRide(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'sales', 'service']);
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 10. /trade_ins/{tradeInId}
+    // ------------------------------------------------------------------
+    function isValidTradeIn(data) {
+      return data.keys().hasAll(['customerName', 'currentMakeModel', 'estimatedValuationLkr', 'status', 'createdByUid', 'updatedAt'])
+        && data.keys().hasOnly(['customerName', 'customerPhone', 'currentMakeModel', 'manufacturingYear', 'registrationNumber', 'mileageKm', 'condition', 'targetModelInterest', 'estimatedValuationLkr', 'status', 'approvedBy', 'approvedByUid', 'approvedAt', 'appliedBookingId', 'evaluatorName', 'notes', 'date', 'createdByUid', 'updatedAt'])
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && data.currentMakeModel is string && data.currentMakeModel.size() >= 1 && data.currentMakeModel.size() <= 100
+        && data.estimatedValuationLkr is number && data.estimatedValuationLkr >= 0
+        && data.status is string && data.status in ['Pending Approval', 'Approved', 'Rejected', 'Applied']
+        && data.createdByUid is string && data.createdByUid.size() <= 128
+        && data.updatedAt is timestamp;
+    }
+
+    match /trade_ins/{tradeInId} {
+      allow get: if isValidId(tradeInId) && hasAnyRole(['general_manager', 'sales', 'finance', 'service']);
+      allow list: if hasAnyRole(['general_manager', 'sales', 'finance', 'service']);
+      allow create: if isValidId(tradeInId) && isValidTradeIn(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().status == 'Pending Approval'
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'sales', 'service']);
+      allow update: if isValidId(tradeInId) && isValidTradeIn(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().updatedAt == request.time
+        && (
+          hasAnyRole(['general_manager', 'finance'])
+          ||
+          (hasRole('service') && existing().status == 'Pending Approval' && incoming().status == 'Pending Approval'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['condition', 'mileageKm', 'notes', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 11. /employees/{employeeId} - HR Staff Roster (NO salary/payroll)
+    // ------------------------------------------------------------------
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['empCode', 'fullName', 'department', 'role', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['empCode', 'fullName', 'department', 'role', 'manager', 'email', 'phone', 'status', 'joinDate', 'updatedAt'])
+        && data.empCode is string && data.empCode.size() <= 30
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.department is string && data.department.size() <= 60
+        && data.role is string && data.role.size() <= 80
+        && data.status is string && data.status in ['Active', 'On Leave']
+        && data.updatedAt is timestamp;
+    }
+
+    match /employees/{employeeId} {
+      allow get: if isValidId(employeeId) && hasAnyRole(['hr', 'general_manager']);
+      allow list: if hasAnyRole(['hr', 'general_manager']);
+      allow create, update: if isValidId(employeeId) && isValidEmployee(incoming())
+        && incoming().updatedAt == request.time
+        && hasRole('hr');
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 12. /employees_payroll/{employeeId} - STRICTLY HR-ONLY PAYROLL
+    // ------------------------------------------------------------------
+    function isValidPayroll(data) {
+      return data.keys().hasAll(['employeeId', 'basicLkr', 'netIllustrativeLkr', 'updatedByUid', 'updatedAt'])
+        && data.keys().hasOnly(['employeeId', 'empCode', 'fullName', 'basicLkr', 'allowancesLkr', 'incentiveEstimateLkr', 'deductionsLkr', 'netIllustrativeLkr', 'updatedByUid', 'updatedAt'])
+        && data.employeeId is string && data.employeeId.size() <= 128
+        && data.basicLkr is number && data.basicLkr >= 0
+        && data.netIllustrativeLkr is number && data.netIllustrativeLkr >= 0
+        && data.updatedByUid == request.auth.uid
+        && data.updatedAt is timestamp;
+    }
+
+    match /employees_payroll/{employeeId} {
+      // Strictly restricted to active HR role ONLY (denied to Sales, Admin, Finance, Service, Stock, GM)
+      allow get: if isValidId(employeeId) && hasRole('hr');
+      allow list: if hasRole('hr');
+      allow create, update: if isValidId(employeeId) && isValidPayroll(incoming())
+        && incoming().updatedAt == request.time
+        && hasRole('hr');
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 13. /leave_requests/{leaveId}
+    // ------------------------------------------------------------------
+    function isValidLeave(data) {
+      return data.keys().hasAll(['employeeId', 'employeeName', 'leaveType', 'days', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['employeeId', 'employeeName', 'department', 'leaveType', 'startDate', 'endDate', 'days', 'reason', 'status', 'appliedOn', 'decisionDate', 'decisionBy', 'decisionByUid', 'updatedAt'])
+        && data.employeeId is string && data.employeeId.size() <= 128
+        && data.employeeName is string && data.employeeName.size() <= 120
+        && data.leaveType is string && data.leaveType in ['Annual', 'Casual', 'Medical']
+        && data.days is number && data.days > 0
+        && data.status is string && data.status in ['Pending', 'Approved', 'Rejected']
+        && data.updatedAt is timestamp;
+    }
+
+    match /leave_requests/{leaveId} {
+      allow get: if isValidId(leaveId) && hasAnyRole(['hr', 'general_manager']);
+      allow list: if hasAnyRole(['hr', 'general_manager']);
+      allow create: if isValidId(leaveId) && isValidLeave(incoming())
+        && incoming().status == 'Pending'
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['hr', 'general_manager']);
+      allow update: if isValidId(leaveId) && isValidLeave(incoming())
+        && existing().status == 'Pending'
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['hr', 'general_manager']);
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 14. /attendance/{attendanceId}
+    // ------------------------------------------------------------------
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['date', 'employeeId', 'employeeName', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['date', 'employeeId', 'employeeName', 'department', 'status', 'checkInTime', 'notes', 'updatedAt'])
+        && data.date is string && data.date.size() <= 30
+        && data.employeeId is string && data.employeeId.size() <= 128
+        && data.employeeName is string && data.employeeName.size() <= 120
+        && data.status is string && data.status in ['Present', 'Late', 'Half Day', 'On Leave']
+        && data.updatedAt is timestamp;
+    }
+
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && hasAnyRole(['hr', 'general_manager']);
+      allow list: if hasAnyRole(['hr', 'general_manager']);
+      allow create, update: if isValidId(attendanceId) && isValidAttendance(incoming())
+        && incoming().updatedAt == request.time
+        && hasRole('hr');
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 15. /service_cards/{cardId}
+    // ------------------------------------------------------------------
+    function isValidServiceCard(data) {
+      return data.keys().hasAll(['customerName', 'bikeModel', 'chassisNumber', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['customerName', 'customerPhone', 'bikeModel', 'chassisNumber', 'serviceType', 'technicianName', 'bay', 'status', 'scheduledDate', 'notes', 'estimatedCostLkr', 'updatedAt'])
+        && data.customerName is string && data.customerName.size() <= 120
+        && data.bikeModel is string && data.bikeModel.size() <= 100
+        && data.chassisNumber is string && data.chassisNumber.size() <= 60
+        && data.status is string && data.status in ['Scheduled', 'In Progress', 'Inspection Completed', 'Ready for Handover']
+        && data.updatedAt is timestamp;
+    }
+
+    match /service_cards/{cardId} {
+      allow get: if isValidId(cardId) && hasAnyRole(['general_manager', 'service', 'stock']);
+      allow list: if hasAnyRole(['general_manager', 'service', 'stock']);
+      allow create, update: if isValidId(cardId) && isValidServiceCard(incoming())
+        && incoming().updatedAt == request.time
+        && hasAnyRole(['general_manager', 'service']);
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 16. /audit_logs/{logId} - Append-Only Audit Log
+    // ------------------------------------------------------------------
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorUid', 'actorEmail', 'actorRole', 'action', 'collection', 'recordId', 'createdAt'])
+        && data.keys().hasOnly(['actorUid', 'actorEmail', 'actorRole', 'action', 'collection', 'recordId', 'requestId', 'changes', 'createdAt'])
+        && data.actorUid is string && data.actorUid == request.auth.uid
+        && data.actorEmail is string && data.actorEmail.size() <= 160
+        && isValidRoleName(data.actorRole)
+        && data.action is string && data.action.size() >= 2 && data.action.size() <= 80
+        && data.collection is string && data.collection.size() <= 60
+        && data.recordId is string && data.recordId.size() <= 128
+        && (!('requestId' in data) || (data.requestId is string && data.requestId.size() <= 128))
+        && (!('changes' in data) || data.changes is map)
+        && data.createdAt is timestamp;
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && hasAnyRole(['admin', 'general_manager', 'finance']);
+      allow list: if hasAnyRole(['admin', 'general_manager', 'finance']);
+      allow create: if isValidId(logId) && isValidAuditLog(incoming())
+        && incoming().createdAt == request.time
+        && isActiveStaff()
+        && incoming().actorRole == currentUserDoc().role;
+      allow update, delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // 17. /idempotency_keys/{keyId} - Duplicate Submission Guard
+    // ------------------------------------------------------------------
+    function isValidIdempotencyKey(data) {
+      return data.keys().hasAll(['requestId', 'operation', 'actorUid', 'resultId', 'createdAt'])
+        && data.keys().hasOnly(['requestId', 'operation', 'actorUid', 'resultId', 'createdAt'])
+        && data.requestId is string && data.requestId.size() >= 4 && data.requestId.size() <= 128
+        && data.operation is string && data.operation.size() <= 60
+        && data.actorUid == request.auth.uid
+        && data.resultId is string && data.resultId.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    match /idempotency_keys/{keyId} {
+      allow get: if isValidId(keyId) && isActiveStaff();
+      allow create: if isValidId(keyId) && isValidIdempotencyKey(incoming())
+        && incoming().createdAt == request.time
+        && isActiveStaff();
+      allow update, delete: if false;
+    }
+  }
+}

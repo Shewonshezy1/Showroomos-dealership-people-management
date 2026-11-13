@@ -115,8 +115,8 @@ export const TestRidesView: React.FC = () => {
     setFeedbackModalOpen(false);
   };
 
-  const handleConvertToLead = (rideId: string) => {
-    const res = convertTestRideToLead(rideId);
+  const handleConvertToLead = async (rideId: string) => {
+    const res = await convertTestRideToLead(rideId);
     if (res.success && res.leadId) {
       setSelectedLeadId(res.leadId);
       setCurrentView('crm');

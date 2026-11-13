@@ -100,9 +100,16 @@ export interface PaymentRecord {
   amountLkr: number;
   type: PaymentType;
   reference: string;
-  status: 'Pending Verification' | 'Verified';
+  status: 'Pending Verification' | 'Verified' | 'Reversed';
+  entryType?: 'PAYMENT' | 'REVERSAL';
+  reversesPaymentId?: string;
+  reversedByPaymentId?: string;
+  requestId?: string;
+  recordedByUid?: string;
   verifiedBy?: string;
+  verifiedByUid?: string;
   verifiedAt?: string;
+  notes?: string;
 }
 
 export interface DeliveryChecklist {
@@ -148,16 +155,25 @@ export interface Booking {
   bikeChassis: string;
   bikeEngine: string;
   totalPriceLkr: number;
+  discountRequestedLkr?: number;
   discountLkr: number;
+  discountStatus?: 'None' | 'Pending' | 'Approved' | 'Rejected';
+  discountApprovedByUid?: string;
   finalPriceLkr: number;
+  verifiedPaidLkr?: number;
+  balanceLkr?: number;
   accessories?: BookingAccessoryItem[];
   accessoriesTotalLkr?: number;
   tradeInCreditLkr?: number;
+  appliedTradeInId?: string;
   payments: PaymentRecord[];
   status: BookingStatus;
   deliveryChecklist: DeliveryChecklist;
   deliveredAt?: string;
   deliveredBy?: string;
+  cancellationReason?: string;
+  requestId?: string;
+  createdByUid?: string;
   createdAt: string; // DD/MM/YYYY
   timeline: BookingTimelineItem[];
 }
@@ -194,7 +210,11 @@ export interface TestRideRecord {
   feedbackRating?: number; // 1-5
   feedbackNotes?: string;
   salespersonName: string;
+  convertedToLeadId?: string;
+  createdByUid?: string;
 }
+
+export type TradeInStatus = 'Pending Approval' | 'Approved' | 'Rejected' | 'Applied';
 
 export interface TradeInValuation {
   id: string;
@@ -207,10 +227,15 @@ export interface TradeInValuation {
   condition: 'Excellent' | 'Good' | 'Fair' | 'Requires Reconditioning';
   targetModelInterest: string; // e.g. "Classic 350"
   estimatedValuationLkr: number;
+  status?: TradeInStatus;
+  approvedBy?: string;
+  approvedByUid?: string;
+  approvedAt?: string;
   appliedBookingId?: string;
   evaluatorName: string;
   date: string;
   notes: string;
+  createdByUid?: string;
 }
 
 export interface EmployeeSalary {
@@ -263,6 +288,7 @@ export interface LeaveRequest {
   appliedOn: string; // DD/MM/YYYY
   decisionDate?: string;
   decisionBy?: string;
+  decisionByUid?: string;
 }
 
 export interface ServiceJobCard {
@@ -284,11 +310,20 @@ export interface ServiceJobCard {
   estimatedCostLkr: number;
 }
 
-export type UserRole = 'management' | 'sales' | 'finance' | 'service' | 'hr';
+export type UserRole =
+  | 'admin'
+  | 'general_manager'
+  | 'sales'
+  | 'finance'
+  | 'hr'
+  | 'service'
+  | 'stock';
+
 export type DemoRole = UserRole;
 
 export interface UserSession {
   id: string;
+  uid: string;
   fullName: string;
   name?: string;
   email: string;
@@ -297,8 +332,36 @@ export interface UserSession {
   roleLabel?: string;
   department: string;
   branch: string;
+  disabled: boolean;
+  invitedBy?: string;
   avatarUrl?: string;
   phone?: string;
+}
+
+export interface StaffInvite {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  designation: string;
+  department: string;
+  branch: string;
+  status: 'Pending' | 'Accepted' | 'Revoked';
+  invitedByUid: string;
+  createdAt?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actorUid: string;
+  actorEmail: string;
+  actorRole: UserRole;
+  action: string;
+  collection: string;
+  recordId: string;
+  requestId?: string;
+  changes?: Record<string, unknown>;
+  createdAt: string;
 }
 
 export type AppView =
@@ -313,4 +376,6 @@ export type AppView =
   | 'financing'
   | 'hr'
   | 'service'
-  | 'reports';
+  | 'reports'
+  | 'admin';
+

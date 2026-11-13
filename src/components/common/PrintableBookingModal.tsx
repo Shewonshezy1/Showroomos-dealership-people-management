@@ -63,9 +63,9 @@ export const PrintableBookingModal: React.FC = () => {
 
         {/* Printable Sheet Canvas */}
         <div className="p-8 bg-white print:p-6 space-y-6 text-stone-800 font-sans">
-          {/* Official Document Banner */}
+          {/* Document Banner */}
           <div className="border border-stone-300 bg-stone-100 p-2.5 text-center text-xs font-bold text-stone-800 tracking-wider uppercase flex items-center justify-between">
-            <span>OFFICIAL MOTORCYCLE BOOKING ORDER & RECEIPT SUMMARY</span>
+            <span>MOTORCYCLE BOOKING ORDER & RECEIPT SUMMARY</span>
             <span className="text-[10px] text-stone-500 font-normal">IDEAL NOVA MOTORS (PVT) LTD · SRI LANKA</span>
           </div>
 
@@ -87,7 +87,7 @@ export const PrintableBookingModal: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-xs text-stone-600 mt-0.5">
-                  Authorized National Distributor & Flagship Operations · Sri Lanka
+                  Showroom Operations Summary · Sri Lanka (Illustrative Figures)
                 </p>
                 <p className="text-[11px] text-stone-500">
                   298 Union Place, Colombo 02, Sri Lanka · Tel: +94 11 200 4500 · info@idealnovamotors.lk
@@ -247,7 +247,7 @@ export const PrintableBookingModal: React.FC = () => {
               )}
               {(booking.accessoriesTotalLkr || 0) > 0 && (
                 <div className="flex justify-between text-amber-800">
-                  <span>Genuine Accessories & Gear:</span>
+                  <span>Accessories & Apparel:</span>
                   <span className="font-mono">+{formatLKR(booking.accessoriesTotalLkr || 0)}</span>
                 </div>
               )}

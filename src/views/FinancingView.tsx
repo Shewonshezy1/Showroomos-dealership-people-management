@@ -111,20 +111,19 @@ export const FinancingView: React.FC = () => {
 
   const handleDispatchQuote = (channel: 'WhatsApp' | 'SMS') => {
     openNotificationModal({
-      title: 'Motorcycle Financing & EMI Quotation',
+      title: 'Illustrative Leasing & EMI Estimate (Preview)',
       recipientName: customerName,
       recipientPhone: customerPhone,
-      message: `Dear ${customerName},\nHere is your requested Royal Enfield Leasing Proposal for the ${selectedModel}:\n\n` +
+      message: `Dear ${customerName},\nHere is your illustrative EMI estimate for the ${selectedModel}:\n\n` +
         `• Showroom Price: ${formatLKR(vehiclePriceLkr)}\n` +
         `• Down Payment (${downPaymentPercent}%): ${formatLKR(downPaymentLkr)}\n` +
         `• Financed Capital: ${formatLKR(principalLkr)}\n` +
-        `• Monthly Installment (EMI): ${formatLKR(monthlyEMI)} / month\n` +
+        `• Est. Monthly Installment (EMI): ${formatLKR(monthlyEMI)} / month\n` +
         `• Repayment Tenure: ${tenureMonths} Months (${tenureMonths / 12} Years)\n` +
-        `• Indicative Interest: ${annualInterestRate}% p.a.\n\n` +
-        `Partner Banks: Commercial Bank, HNB, Sampath Bank, LOLC Finance.\n` +
-        `Ideal Motors Royal Enfield Showroom, Colombo 03.\n* Illustrative estimate; subject to credit approval.`,
+        `• Indicative Rate Used: ${annualInterestRate}% p.a.\n\n` +
+        `* Illustrative showroom estimate only — no live bank integration; subject to lender underwriting.`,
       channel,
-      purpose: 'Leasing Quotation',
+      purpose: 'Simulated Estimate Preview',
     });
   };
 
@@ -143,7 +142,7 @@ export const FinancingView: React.FC = () => {
             Motorcycle Leasing & EMI Simulator
           </h1>
           <p className="text-xs text-stone-400 mt-0.5">
-            Calculate customer down payments, monthly lease rentals, amortization curves, and partner institution comparisons.
+            Illustrative EMI calculator and amortization schedule (no live bank API integration).
           </p>
         </div>
 
@@ -176,7 +175,7 @@ export const FinancingView: React.FC = () => {
                 <span>Lease Parameters</span>
               </div>
               <span className="text-[11px] text-stone-400 font-mono">
-                Real-Time Calculation
+                Illustrative Calculation
               </span>
             </div>
 
@@ -359,31 +358,34 @@ export const FinancingView: React.FC = () => {
             </div>
           </div>
 
-          {/* Partner Leasing Institutions Preview */}
+          {/* Illustrative Market Bank Rates (Not a Live Bank Integration) */}
           <div className="bg-[#18191d] border border-stone-800 rounded-xl p-4">
-            <div className="text-xs font-semibold text-stone-300 uppercase tracking-wider mb-2.5 flex items-center gap-2">
+            <div className="text-xs font-semibold text-stone-300 uppercase tracking-wider mb-1 flex items-center gap-2">
               <Building2 className="w-4 h-4 text-stone-400" />
-              <span>Partner Leasing Facilities</span>
+              <span>Illustrative Bank Rate Examples</span>
             </div>
+            <p className="text-[10px] text-stone-500 mb-2.5">
+              Indicative examples only — no verified bank partnership or live rate feed.
+            </p>
             <div className="space-y-2 text-xs">
               <div className="p-2 bg-stone-900/60 rounded-lg border border-stone-800 flex items-center justify-between">
                 <div>
-                  <div className="font-semibold text-stone-200">Commercial Bank Leasing</div>
-                  <div className="text-[10px] text-stone-400">Up to 5 Yrs · Special RE Rate</div>
+                  <div className="font-semibold text-stone-200">Sample Commercial Bank Rate</div>
+                  <div className="text-[10px] text-stone-400">Up to 5 Yrs · Illustrative</div>
                 </div>
                 <span className="text-[11px] font-mono text-emerald-400 font-bold">14.75%</span>
               </div>
               <div className="p-2 bg-stone-900/60 rounded-lg border border-stone-800 flex items-center justify-between">
                 <div>
-                  <div className="font-semibold text-stone-200">Hatton National Bank (HNB)</div>
-                  <div className="text-[10px] text-stone-400">Instant 24hr Fast-Track Approval</div>
+                  <div className="font-semibold text-stone-200">Sample Private Bank Rate</div>
+                  <div className="text-[10px] text-stone-400">Standard Retail · Illustrative</div>
                 </div>
                 <span className="text-[11px] font-mono text-emerald-400 font-bold">15.25%</span>
               </div>
               <div className="p-2 bg-stone-900/60 rounded-lg border border-stone-800 flex items-center justify-between">
                 <div>
-                  <div className="font-semibold text-stone-200">LOLC Finance PLC</div>
-                  <div className="text-[10px] text-stone-400">Flexible Guarantor Terms</div>
+                  <div className="font-semibold text-stone-200">Sample Finance Co. Rate</div>
+                  <div className="text-[10px] text-stone-400">Flexible Term · Illustrative</div>
                 </div>
                 <span className="text-[11px] font-mono text-emerald-400 font-bold">16.00%</span>
               </div>

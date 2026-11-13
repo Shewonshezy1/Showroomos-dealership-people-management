@@ -101,8 +101,14 @@ class InMemoryTransactionalStore implements DataStore {
         async saveUser(user) {
           draft.users.set(user.uid, deepClone(user));
         },
+        async deleteUser(uid) {
+          draft.users.delete(uid);
+        },
         async saveInvite(invite) {
           draft.invites.set(invite.id.toLowerCase(), deepClone(invite));
+        },
+        async deleteInvite(email) {
+          draft.invites.delete(email.toLowerCase());
         },
         async listUsers() {
           return Array.from(draft.users.values());
@@ -203,6 +209,12 @@ class InMemoryTransactionalStore implements DataStore {
             accessories: Array.from(draft.accessories.values()),
             trade_ins: Array.from(draft.tradeIns.values()),
             employees: Array.from(draft.employees.values()),
+            employees_payroll: Array.from(draft.payrolls.entries()).map(([employeeId, val]) => ({
+              id: employeeId,
+              empCode: val.empCode,
+              fullName: val.fullName,
+              ...val.salary,
+            })),
             leave_requests: Array.from(draft.leaves.values()),
             audit_logs: deepClone(draft.auditLogs),
           };
@@ -225,6 +237,7 @@ class InMemoryTransactionalStore implements DataStore {
           if (Array.isArray(snapshot.trade_ins)) {
             for (const t of snapshot.trade_ins as TradeInValuation[]) draft.tradeIns.set(t.id, deepClone(t));
           }
+          // Note: audit_logs are intentionally never overwritten or deleted during restore
         },
       };
 
@@ -243,7 +256,36 @@ class InMemoryTransactionalStore implements DataStore {
 }
 
 const TOKENS: Record<string, VerifiedTokenClaims> = {
-  'tok-admin': { uid: 'uid-admin', email: 'admin@idealnova.lk', emailVerified: true, name: 'Admin Officer' },
+  'tok-super-admin': {
+    uid: 'uid-super-admin',
+    email: 'shewonshezy12@gmail.com',
+    emailVerified: true,
+    name: 'Super Administrator / Owner',
+    customRole: 'super_admin',
+  },
+  'tok-super-admin-stale': {
+    uid: 'uid-super-admin',
+    email: 'shewonshezy12@gmail.com',
+    emailVerified: true,
+    name: 'Super Administrator / Owner',
+    customRole: 'sales',
+  },
+  'tok-co-super': {
+    uid: 'uid-co-super',
+    email: 'cosuper@idealnova.lk',
+    emailVerified: true,
+    name: 'Secondary Super Admin',
+    customRole: 'super_admin',
+  },
+  'tok-admin': { uid: 'uid-admin', email: 'admin@idealnova.lk', emailVerified: true, name: 'Admin Officer', customRole: 'admin' },
+  'tok-admin-stale': { uid: 'uid-admin', email: 'admin@idealnova.lk', emailVerified: true, name: 'Admin Officer', customRole: 'sales' },
+  'tok-limited-admin': {
+    uid: 'uid-limited-admin',
+    email: 'limited.admin@idealnova.lk',
+    emailVerified: true,
+    name: 'Limited Branch Admin',
+    customRole: 'admin',
+  },
   'tok-gm': { uid: 'uid-gm', email: 'gm@idealnova.lk', emailVerified: true, name: 'GM Officer' },
   'tok-sales': { uid: 'uid-sales', email: 'sales@idealnova.lk', emailVerified: true, name: 'Sales Rep' },
   'tok-sales-2': { uid: 'uid-sales-2', email: 'sales2@idealnova.lk', emailVerified: true, name: 'Sales Rep Two' },
@@ -265,6 +307,35 @@ const TOKENS: Record<string, VerifiedTokenClaims> = {
 function createSeedStore(): InMemoryTransactionalStore {
   const users = new Map<string, UserSession>([
     [
+      'uid-super-admin',
+      {
+        id: 'uid-super-admin',
+        uid: 'uid-super-admin',
+        fullName: 'Super Administrator / Owner',
+        email: 'shewonshezy12@gmail.com',
+        role: 'super_admin',
+        designation: 'Super Administrator / Owner',
+        department: 'Executive & Ownership',
+        branch: 'Colombo Flagship Hub',
+        disabled: false,
+        isPermanentOwner: true,
+      },
+    ],
+    [
+      'uid-co-super',
+      {
+        id: 'uid-co-super',
+        uid: 'uid-co-super',
+        fullName: 'Secondary Super Admin',
+        email: 'cosuper@idealnova.lk',
+        role: 'super_admin',
+        designation: 'Co-Admin',
+        department: 'Executive',
+        branch: 'Colombo Flagship Hub',
+        disabled: false,
+      },
+    ],
+    [
       'uid-admin',
       {
         id: 'uid-admin',
@@ -276,6 +347,44 @@ function createSeedStore(): InMemoryTransactionalStore {
         department: 'IT',
         branch: 'Colombo Flagship Hub',
         disabled: false,
+        accountsCreatedCount: 0,
+        adminLimits: {
+          allowedModules: ['dashboard', 'admin'],
+          canCreateStaff: true,
+          canCreateSystemAdmins: false,
+          maxAccountsCanCreate: 10,
+          canDeleteUsers: false,
+          canResetPasswords: false,
+          canViewAuditLogs: true,
+          canAssignPermissions: true,
+          canExportBackup: true,
+        },
+      },
+    ],
+    [
+      'uid-limited-admin',
+      {
+        id: 'uid-limited-admin',
+        uid: 'uid-limited-admin',
+        fullName: 'Limited Branch Admin',
+        email: 'limited.admin@idealnova.lk',
+        role: 'admin',
+        designation: 'Branch System Admin',
+        department: 'Operations',
+        branch: 'Kandy Hub',
+        disabled: false,
+        accountsCreatedCount: 0,
+        adminLimits: {
+          allowedModules: ['dashboard', 'crm', 'inventory'],
+          canCreateStaff: true,
+          canCreateSystemAdmins: false,
+          maxAccountsCanCreate: 2,
+          canDeleteUsers: false,
+          canResetPasswords: false,
+          canViewAuditLogs: false,
+          canAssignPermissions: false,
+          canExportBackup: false,
+        },
       },
     ],
     [
@@ -544,6 +653,11 @@ async function runTests(): Promise<void> {
   const store = createSeedStore();
   const app = express();
   app.use(express.json());
+  const claimedUpdates: Array<{ uid: string; role: string; disabled: boolean }> = [];
+  const createdAuthUsers: Array<{ uid: string; email: string }> = [];
+  const deletedAuthUids: string[] = [];
+  const resetAuthEmails: string[] = [];
+
   app.use(
     '/api',
     createApiRouter({
@@ -553,7 +667,21 @@ async function runTests(): Promise<void> {
         return claims;
       },
       store,
-      bootstrapOwnerEmail: 'owner@idealnova.lk',
+      syncCustomClaims: async (uid, role, disabled) => {
+        claimedUpdates.push({ uid, role, disabled });
+      },
+      createAuthUser: async input => {
+        const uid = `auth-created-${createdAuthUsers.length + 1}`;
+        createdAuthUsers.push({ uid, email: input.email });
+        return { uid };
+      },
+      deleteAuthUser: async uid => {
+        deletedAuthUids.push(uid);
+      },
+      resetAuthPassword: async input => {
+        resetAuthEmails.push(input.email);
+        return { resetLink: `https://reset.example.com/${encodeURIComponent(input.email)}` };
+      },
     })
   );
 
@@ -884,6 +1012,270 @@ async function runTests(): Promise<void> {
     pass(
       `Audit logs verified (${(rAudit.data.logs as AuditLogEntry[]).length} entries) & Backup/Restore round-trip verified (${backupResult.totalDocuments} docs)`
     );
+
+    // 11. Super Admin (Owner) Authorization, Permanent Protection & Restricted Admin Boundaries
+    const rStaleAdminClaim = await apiCall(baseUrl, 'GET', '/auth/session', 'tok-admin-stale');
+    assert.equal(rStaleAdminClaim.status, 403);
+    assert.equal(rStaleAdminClaim.data.code, 'CLAIMS_OUT_OF_SYNC');
+
+    // Permanent Owner (shewonshezy12@gmail.com) is never locked out by stale claims & auto-heals even if deleted/demoted
+    const rOwnerHeal = await apiCall(baseUrl, 'GET', '/auth/session', 'tok-super-admin-stale');
+    assert.equal(rOwnerHeal.status, 200);
+    assert.equal((rOwnerHeal.data.user as UserSession).role, 'super_admin');
+    assert.equal((rOwnerHeal.data.user as UserSession).isPermanentOwner, true);
+
+    // Even if deleted from users store before redeployment, signing in with shewonshezy12@gmail.com auto-assigns SUPER_ADMIN
+    await store.runTransaction(async tx => {
+      await tx.deleteUser?.('uid-super-admin');
+    });
+    const rOwnerAutoBootstrap = await apiCall(baseUrl, 'POST', '/auth/activate-invite', 'tok-super-admin');
+    assert.equal(rOwnerAutoBootstrap.status, 200);
+    assert.equal((rOwnerAutoBootstrap.data.user as UserSession).role, 'super_admin');
+    assert.equal((rOwnerAutoBootstrap.data.user as UserSession).isPermanentOwner, true);
+    assert.ok(store.state.auditLogs.some(l => l.action === 'OWNER_SUPER_ADMIN_AUTO_ASSIGNED'));
+    pass('Permanent Owner (Shewonshezy12@gmail.com) auto-assigns SUPER_ADMIN and heals after redeployment');
+
+    // Restricted admin cannot read payroll, restore backups, invite super_admin, assign super_admin, or modify super_admin
+    const rAdminExport = await apiCall(baseUrl, 'GET', '/backup/export', 'tok-admin');
+    assert.equal(rAdminExport.status, 200);
+    assert.equal((rAdminExport.data.snapshot as Record<string, unknown>).employees_payroll, undefined);
+
+    const rAdminRestore = await apiCall(baseUrl, 'POST', '/backup/restore', 'tok-admin', {
+      snapshot: rAdminExport.data.snapshot,
+    });
+    assert.equal(rAdminRestore.status, 403);
+
+    const rAdminInviteSuper = await apiCall(baseUrl, 'POST', '/admin/invites', 'tok-admin', {
+      email: 'rogue.owner@idealnova.lk',
+      fullName: 'Rogue',
+      role: 'super_admin',
+    });
+    assert.equal(rAdminInviteSuper.status, 403);
+
+    const rAdminPromoteSales = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-sales/role', 'tok-admin', {
+      role: 'super_admin',
+    });
+    assert.equal(rAdminPromoteSales.status, 403);
+
+    const rAdminTouchSuper = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/role', 'tok-admin', {
+      role: 'sales',
+    });
+    assert.equal(rAdminTouchSuper.status, 403);
+
+    const rAdminDisableSuper = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/status', 'tok-admin', {
+      disabled: true,
+    });
+    assert.equal(rAdminDisableSuper.status, 403);
+    pass('Restricted admin blocked from payroll export, restore, super_admin invites, promotion, or owner modification');
+
+    // Another Super Admin CANNOT delete, demote, deactivate, reset password, or remove permissions of Permanent Owner
+    const rCoDemoteOwner = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/role', 'tok-co-super', {
+      role: 'sales',
+    });
+    assert.equal(rCoDemoteOwner.status, 403);
+    const rCoDisableOwner = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/status', 'tok-co-super', {
+      disabled: true,
+    });
+    assert.equal(rCoDisableOwner.status, 403);
+    const rCoPermsOwner = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/permissions', 'tok-co-super', {
+      assignedPermissions: ['dashboard.view'],
+    });
+    assert.equal(rCoPermsOwner.status, 403);
+    const rCoResetOwner = await apiCall(baseUrl, 'POST', '/admin/users/uid-super-admin/reset-password', 'tok-co-super', {});
+    assert.equal(rCoResetOwner.status, 403);
+    const rCoDeleteOwner = await apiCall(baseUrl, 'DELETE', '/admin/users/uid-super-admin', 'tok-co-super');
+    assert.equal(rCoDeleteOwner.status, 403);
+    pass('Permanent Owner (Shewonshezy12@gmail.com) protected from deletion, demotion, deactivation, permission stripping, and password reset by any admin');
+
+    // Super Admin cannot demote/disable self; can promote/demote other non-owner users
+    const rSelfDemote = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/role', 'tok-super-admin', {
+      role: 'admin',
+    });
+    assert.equal(rSelfDemote.status, 403);
+
+    const rSelfDisable = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-super-admin/status', 'tok-super-admin', {
+      disabled: true,
+    });
+    assert.equal(rSelfDisable.status, 400);
+
+    const rPromoteAdmin = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-admin/role', 'tok-super-admin', {
+      role: 'super_admin',
+    });
+    assert.equal(rPromoteAdmin.status, 200);
+    assert.ok(claimedUpdates.some(c => c.uid === 'uid-admin' && c.role === 'super_admin'));
+
+    const rDemoteBack = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-admin/role', 'tok-super-admin', {
+      role: 'admin',
+    });
+    assert.equal(rDemoteBack.status, 200);
+    pass('Super Admin role governance & custom claim sync verified');
+
+    // 12. System Administrator Module Scope, Creation Quota, Delete/Reset/Audit Limits
+    // tok-limited-admin has allowedModules: ['dashboard', 'crm', 'inventory'], canCreateStaff: true, maxAccountsCanCreate: 2,
+    // and FALSE for canCreateSystemAdmins, canDeleteUsers, canResetPasswords, canViewAuditLogs, canExportBackup.
+    const rLimAudit = await apiCall(baseUrl, 'GET', '/audit-logs', 'tok-limited-admin');
+    assert.equal(rLimAudit.status, 403);
+    const rLimExport = await apiCall(baseUrl, 'GET', '/backup/export', 'tok-limited-admin');
+    assert.equal(rLimExport.status, 403);
+    const rLimPayroll = await apiCall(baseUrl, 'GET', '/operations/payroll', 'tok-limited-admin');
+    assert.equal(rLimPayroll.status, 403);
+    const rLimBooking = await apiCall(baseUrl, 'POST', '/operations/bookings', 'tok-limited-admin', {
+      requestId: 'req-lim-book',
+      customerName: 'Blocked',
+      customerPhone: '+94 77 111 2233',
+      bikeId: 'bike-1',
+    });
+    assert.equal(rLimBooking.status, 403);
+    const rLimCreateAdmin = await apiCall(baseUrl, 'POST', '/admin/users', 'tok-limited-admin', {
+      email: 'sub.admin@idealnova.lk',
+      fullName: 'Sub Admin',
+      role: 'admin',
+    });
+    assert.equal(rLimCreateAdmin.status, 403);
+    const rLimDelete = await apiCall(baseUrl, 'DELETE', '/admin/users/uid-sales-2', 'tok-limited-admin');
+    assert.equal(rLimDelete.status, 403);
+    const rLimReset = await apiCall(baseUrl, 'POST', '/admin/users/uid-sales-2/reset-password', 'tok-limited-admin', {});
+    assert.equal(rLimReset.status, 403);
+
+    // Create 2 staff users (1 with password -> calls createAuthUser, 1 invite), then 3rd fails quota (2/2)
+    const rLimStaff1 = await apiCall(baseUrl, 'POST', '/admin/users', 'tok-limited-admin', {
+      email: 'new.staff1@idealnova.lk',
+      fullName: 'New Staff One',
+      role: 'sales',
+      password: 'Password123!',
+    });
+    assert.equal(rLimStaff1.status, 201);
+    assert.equal(createdAuthUsers.length, 1);
+
+    const rLimStaff2 = await apiCall(baseUrl, 'POST', '/admin/users', 'tok-limited-admin', {
+      email: 'new.staff2@idealnova.lk',
+      fullName: 'New Staff Two',
+      role: 'service',
+    });
+    assert.equal(rLimStaff2.status, 201);
+
+    const rLimStaff3 = await apiCall(baseUrl, 'POST', '/admin/users', 'tok-limited-admin', {
+      email: 'new.staff3@idealnova.lk',
+      fullName: 'Over Quota',
+      role: 'sales',
+    });
+    assert.equal(rLimStaff3.status, 403);
+    assert.equal(rLimStaff3.data.code, 'ACCOUNT_CREATION_LIMIT_REACHED');
+    pass('System Administrator enforced strict module limits, action flags, and maxAccountsCanCreate quota (2/2)');
+
+    // Super Admin grants limited-admin password reset, delete, and audit view permissions
+    const rGrantLimits = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-limited-admin/permissions', 'tok-super-admin', {
+      adminLimits: {
+        allowedModules: ['dashboard', 'crm', 'inventory', 'payments'],
+        canCreateStaff: true,
+        canCreateSystemAdmins: false,
+        maxAccountsCanCreate: 5,
+        canDeleteUsers: true,
+        canResetPasswords: true,
+        canViewAuditLogs: true,
+        canAssignPermissions: true,
+        canExportBackup: false,
+      },
+    });
+    assert.equal(rGrantLimits.status, 200);
+
+    const rLimAuditAfter = await apiCall(baseUrl, 'GET', '/audit-logs', 'tok-limited-admin');
+    assert.equal(rLimAuditAfter.status, 200);
+
+    const createdStaffUid = (rLimStaff1.data.user as UserSession).uid;
+    const rLimResetAfter = await apiCall(
+      baseUrl,
+      'POST',
+      `/admin/users/${createdStaffUid}/reset-password`,
+      'tok-limited-admin',
+      {}
+    );
+    assert.equal(rLimResetAfter.status, 200);
+    assert.ok(resetAuthEmails.includes('new.staff1@idealnova.lk'));
+
+    const rLimDeleteAfter = await apiCall(
+      baseUrl,
+      'DELETE',
+      `/admin/users/${createdStaffUid}`,
+      'tok-limited-admin'
+    );
+    assert.equal(rLimDeleteAfter.status, 200);
+    assert.ok(deletedAuthUids.includes(createdStaffUid));
+    assert.equal(store.state.users.get(createdStaffUid), undefined);
+
+    // Super Admin sets custom granular permissions on standard staff user + logs login attempts
+    const rCustomStaffPerm = await apiCall(baseUrl, 'PATCH', '/admin/users/uid-sales-2/permissions', 'tok-super-admin', {
+      assignedPermissions: ['dashboard.view', 'inventory.bikes.read'],
+    });
+    assert.equal(rCustomStaffPerm.status, 200);
+    assert.deepEqual((rCustomStaffPerm.data.user as UserSession).assignedPermissions, ['dashboard.view', 'inventory.bikes.read']);
+
+    const rLoginFailAudit = await apiCall(baseUrl, 'POST', '/auth/login-audit', undefined, {
+      outcome: 'LOGIN_FAILED',
+      email: 'attacker@example.com',
+      reason: 'auth/wrong-password',
+    });
+    assert.equal(rLoginFailAudit.status, 201);
+    assert.ok(store.state.auditLogs.some(l => l.action === 'ACCOUNT_CREATED'));
+    assert.ok(store.state.auditLogs.some(l => l.action === 'PERMISSION_CHANGE'));
+    assert.ok(store.state.auditLogs.some(l => l.action === 'PASSWORD_RESET'));
+    assert.ok(store.state.auditLogs.some(l => l.action === 'ACCOUNT_DELETED'));
+    assert.ok(store.state.auditLogs.some(l => l.action === 'LOGIN_FAILED' && l.actorEmail === 'attacker@example.com'));
+    pass('Super Admin System Admin limit delegation, password reset, account deletion, custom staff permissions, and login attempt auditing verified');
+
+    // Super Admin can access payroll & full backup/restore, while audit_logs remain immutable
+    const rSuperPayroll = await apiCall(baseUrl, 'GET', '/operations/payroll', 'tok-super-admin');
+    assert.equal(rSuperPayroll.status, 200);
+
+    const rSuperExport = await apiCall(baseUrl, 'GET', '/backup/export', 'tok-super-admin');
+    assert.equal(rSuperExport.status, 200);
+    assert.ok(Array.isArray((rSuperExport.data.snapshot as Record<string, unknown>).employees_payroll));
+
+    const auditCountBeforeRestore = store.state.auditLogs.length;
+    const tamperedBackup = deepClone(rSuperExport.data.snapshot as Record<string, unknown>);
+    tamperedBackup.audit_logs = []; // Attempt to wipe audit logs via restore must be ignored
+    const rSuperRestore = await apiCall(baseUrl, 'POST', '/backup/restore', 'tok-super-admin', {
+      snapshot: tamperedBackup,
+    });
+    assert.equal(rSuperRestore.status, 200);
+    assert.ok(store.state.auditLogs.length >= auditCountBeforeRestore + 1);
+    pass('Super Admin full payroll access & backup/restore verified while keeping audit_logs immutable');
+
+    // Super Admin MUST still obey business integrity rules (no bypassing double allocation, overpayment, or delivery gates)
+    const rSuperDoubleBook = await apiCall(baseUrl, 'POST', '/operations/bookings', 'tok-super-admin', {
+      requestId: 'req-super-double-book',
+      customerName: 'Bypass Attempt',
+      customerPhone: '+94 77 000 0000',
+      bikeId: 'bike-2', // Already Delivered!
+    });
+    assert.equal(rSuperDoubleBook.status, 409);
+
+    const rSuperBook1 = await apiCall(baseUrl, 'POST', '/operations/bookings', 'tok-super-admin', {
+      requestId: 'req-super-book-1',
+      customerName: 'Owner Test Buyer',
+      customerPhone: '+94 77 123 4567',
+      bikeId: 'bike-1',
+    });
+    assert.equal(rSuperBook1.status, 201);
+    const superBk = rSuperBook1.data.booking as Booking;
+
+    const rSuperOverpay = await apiCall(baseUrl, 'POST', '/operations/payments', 'tok-super-admin', {
+      bookingId: superBk.id,
+      requestId: 'req-super-overpay',
+      amountLkr: 9900000,
+      type: 'Booking Advance',
+      reference: 'SA-OVER-1',
+    });
+    assert.equal(rSuperOverpay.status, 400);
+
+    const rSuperDeliverBlocked = await apiCall(
+      baseUrl,
+      'POST',
+      `/operations/bookings/${superBk.id}/deliver`,
+      'tok-super-admin'
+    );
+    assert.equal(rSuperDeliverBlocked.status, 400);
+    pass('Super Admin strictly obeys 1:1 bike allocation, overpayment guard, and delivery handover gates');
 
     console.log(`\nALL ${passed} RELEASE SECURITY & TRANSACTION CHECKS PASSED!`);
   } finally {

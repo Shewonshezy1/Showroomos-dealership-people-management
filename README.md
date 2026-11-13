@@ -69,59 +69,62 @@ Before live staff members can sign in across browsers/devices, an operator with 
 
 ---
 
-## 4. Secure First-Admin Provisioning (No Public Bootstrap Endpoint)
+## 4. Secure Owner & Admin Provisioning (Out-of-Band Only)
 
-There is **no** public HTTP endpoint allowing arbitrary callers to create an admin account.
+There is **no** public HTTP endpoint and **no** login-time email self-elevation for owner or admin accounts.
 
 Use the trusted out-of-band CLI script (`scripts/provision-admin.ts`):
 
 ```bash
-# Provision an initial Admin (either creates Pending invite or promotes verified Auth UID)
-FIREBASE_SERVICE_ACCOUNT_JSON="$(cat service-account.json)" \
+# Provision the verified Owner (super_admin) after they exist in Firebase Auth with verified email:
 npx tsx scripts/provision-admin.ts \
-  --email "owner@dealership.lk" \
-  --name "Dealership Owner" \
-  --role admin \
+  --email "Shewonshezy12@gmail.com" \
+  --name "Super Administrator / Owner" \
+  --role super_admin \
   --branch "Colombo Flagship Hub"
 ```
 
-Once the first `admin` logs in:
+This script sets Firebase Auth custom claims (`{ role: 'super_admin', disabled: false }`), writes `/users/{uid}` and `/staff_directory/{uid}`, and records an immutable entry in `/audit_logs`. The owner must sign out and sign back in if already logged in so Firebase refreshes their ID token custom claims.
+
+Once active:
 - Open **Access & Audit Logs** in the sidebar.
-- Create invitations (`staff_invites`) with exact email and role for subsequent staff.
-- When an invited staff member signs in via Google or Email/Password with a verified email, their session activates strictly under the pre-assigned invite role (client-supplied roles are never trusted).
+- Create invitations (`staff_invites`) with exact email and role (`admin`, `general_manager`, `sales`, `finance`, `hr`, `service`, `stock`) for subsequent staff.
+- Restricted `admin` cannot invite `super_admin`, assign `super_admin`, modify/disable a `super_admin`, read payroll, or restore backups.
 
 ---
 
 ## 5. Role-Based Permission Matrix & Separation of Duties
 
-Seven canonical roles are enforced in the UI (`src/auth/permissions.ts`), Express API (`server/engine.ts`), and Firestore Rules (`firestore.rules`):
+Eight canonical roles are enforced in the UI (`src/auth/permissions.ts`), Express API (`server/engine.ts`), and Firestore Rules (`firestore.rules`):
 
-| Capability / Module | `admin` | `general_manager` | `sales` | `finance` | `hr` | `service` | `stock` |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Invites, Role Assignment & Disable Users | Yes | — | — | — | — | — | — |
-| Audit Logs View | Yes | Yes | — | Yes | — | — | — |
-| Database Backup Export | Yes | — | — | — | — | — | — |
-| Executive Dashboard & Overview | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Sales CRM Leads (Read / Write) | — | Yes | Yes | — | — | — | — |
-| Test Rides & Feedback (Read / Write) | — | Yes | Yes | — | — | Yes | — |
-| Motorcycle Inventory (Read / Write) | — | R/W | R | R | — | R | R/W |
-| Accessories Catalog (Read / Write) | — | R/W | R | R | — | R | R/W |
-| Bookings Create / Cancel / Attach Accessories | — | Yes | Yes | Cancel Only | — | — | Attach Only |
-| Discount Request | — | Yes | Yes | — | — | — | — |
-| **Discount Approval / Rejection** | — | **Yes** | **Blocked** | **Yes** | — | — | — |
-| Record Unverified Payment Receipt | — | — | Yes | Yes | — | — | — |
-| **Verify Payment / Reverse Payment Ledger** | **Blocked** | **Blocked** | **Blocked** | **Yes** | **Blocked** | **Blocked** | **Blocked** |
-| Trade-In Valuation Estimate | — | Yes | Yes | — | — | — | — |
-| **Trade-In Approval & Credit Application** | **Blocked** | **Yes** | **Blocked** | **Yes** | **Blocked** | **Blocked** | **Blocked** |
-| Pre-Delivery Inspection (PDI) & Handover | — | Yes | Read Only | Read Only | — | **Yes** | Read Only |
-| Service Job Cards | — | Yes | — | — | — | Yes | Read Only |
-| HR Directory & Leave Requests | — | Read + Approve | — | — | Yes | — | — |
-| **Employee Payroll & Salary Records** | **Blocked** | **Blocked** | **Blocked** | **Blocked** | **Yes (Exclusive)** | **Blocked** | **Blocked** |
+| Capability / Module | `super_admin` | `admin` *(Restricted)* | `general_manager` | `sales` | `finance` | `hr` | `service` | `stock` |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Invites, Role Assignment & Disable Users | **Yes (All)** | Non-Owner Only | — | — | — | — | — | — |
+| Audit Logs View (Immutable) | **Yes** | Yes | Yes | — | Yes | — | — | — |
+| Database Backup Export / Restore | **Export + Restore** | Export Only *(No Payroll)* | — | — | — | — | — | — |
+| Application Settings Management | **Yes** | — | — | — | — | — | — | — |
+| Executive Dashboard & Overview | **Yes** | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Sales CRM Leads (Read / Write) | **Yes** | — | Yes | Yes | — | — | — | — |
+| Test Rides & Feedback (Read / Write) | **Yes** | — | Yes | Yes | — | — | Yes | — |
+| Motorcycle Inventory (Read / Write) | **R/W** | — | R/W | R | R | — | R | R/W |
+| Accessories Catalog (Read / Write) | **R/W** | — | R/W | R | R | — | R | R/W |
+| Bookings Create / Cancel / Attach Accessories | **Yes** | — | Yes | Yes | Cancel Only | — | — | Attach Only |
+| Discount Request | **Yes** | — | Yes | Yes | — | — | — | — |
+| **Discount Approval / Rejection** | **Yes** | **Blocked** | **Yes** | **Blocked** | **Yes** | — | — | — |
+| Record Unverified Payment Receipt | **Yes** | — | — | Yes | Yes | — | — | — |
+| **Verify Payment / Reverse Payment Ledger** | **Yes** | **Blocked** | **Blocked** | **Blocked** | **Yes** | **Blocked** | **Blocked** | **Blocked** |
+| Trade-In Valuation Estimate | **Yes** | — | Yes | Yes | — | — | — | — |
+| **Trade-In Approval & Credit Application** | **Yes** | **Blocked** | **Yes** | **Blocked** | **Yes** | **Blocked** | **Blocked** | **Blocked** |
+| Pre-Delivery Inspection (PDI) & Handover | **Yes** | — | Yes | Read Only | Read Only | — | **Yes** | Read Only |
+| Service Job Cards | **Yes** | — | Yes | — | — | — | Yes | Read Only |
+| HR Directory & Leave Requests | **Yes** | — | Read + Approve | — | — | Yes | — | — |
+| **Employee Payroll & Salary Records** | **Yes** | **Blocked** | **Blocked** | **Blocked** | **Blocked** | **Yes** | **Blocked** | **Blocked** |
 
-Key Separation-of-Duties controls:
-- `admin` governs staff identity lifecycle, invites, audit logs, and backups — **cannot** verify/reverse payments, approve discounts, approve trade-ins, or read `employees_payroll`.
+Key Separation-of-Duties & Integrity controls:
+- `super_admin` holds full business and governance permissions across all modules while still respecting every integrity rule (1:1 bike allocation, payment idempotency, overpayment checks, delivery handover gates, immutable financial/audit logs, and last-active-owner protection).
+- Restricted `admin` governs non-owner staff identity lifecycle, invites, audit logs, and non-payroll exports — **cannot** access CRM, bookings, inventory, payroll, backup restore, or modify `super_admin` accounts.
 - `sales` **cannot** verify payments, reverse receipts, approve their own discounts, approve trade-in credits, read payroll, or assign roles.
-- `employees_payroll` is strictly isolated to `hr` both in `firestore.rules` and `/api/operations/payroll`.
+- `employees_payroll` is isolated exclusively to `super_admin` and `hr` in `firestore.rules`, `/api/operations/payroll`, and `/api/backup/export`.
 
 ---
 

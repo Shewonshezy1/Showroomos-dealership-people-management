@@ -14,8 +14,6 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export const BOOTSTRAP_OWNER_EMAIL = 'shewonshezy12@gmail.com';
-
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',

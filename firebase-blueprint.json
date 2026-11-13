@@ -10,12 +10,17 @@
         "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "role": {
           "type": "string",
-          "enum": ["admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
+          "enum": ["super_admin", "admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
         },
         "designation": { "type": "string", "maxLength": 100 },
         "department": { "type": "string", "maxLength": 80 },
         "branch": { "type": "string", "maxLength": 80 },
         "disabled": { "type": "boolean" },
+        "isPermanentOwner": { "type": "boolean" },
+        "assignedPermissions": { "type": "array" },
+        "adminLimits": { "type": "object" },
+        "accountsCreatedCount": { "type": "number" },
+        "createdByUid": { "type": "string", "maxLength": 128 },
         "invitedBy": { "type": "string", "maxLength": 160 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -31,7 +36,7 @@
         "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "role": {
           "type": "string",
-          "enum": ["admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
+          "enum": ["super_admin", "admin", "general_manager", "sales", "finance", "hr", "service", "stock"]
         },
         "designation": { "type": "string", "maxLength": 100 },
         "department": { "type": "string", "maxLength": 80 },
@@ -56,6 +61,8 @@
         "branch": { "type": "string", "maxLength": 80 },
         "status": { "type": "string", "enum": ["Pending", "Accepted", "Revoked"] },
         "invitedByUid": { "type": "string", "maxLength": 128 },
+        "assignedPermissions": { "type": "array" },
+        "adminLimits": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

@@ -311,6 +311,7 @@ export interface ServiceJobCard {
 }
 
 export type UserRole =
+  | 'super_admin'
   | 'admin'
   | 'general_manager'
   | 'sales'
@@ -320,6 +321,35 @@ export type UserRole =
   | 'stock';
 
 export type DemoRole = UserRole;
+
+export type DealershipModule =
+  | 'dashboard'
+  | 'reports'
+  | 'crm'
+  | 'testrides'
+  | 'inventory'
+  | 'accessories'
+  | 'bookings'
+  | 'payments'
+  | 'tradein'
+  | 'delivery'
+  | 'service'
+  | 'financing'
+  | 'hr'
+  | 'payroll'
+  | 'admin';
+
+export interface SystemAdminLimits {
+  allowedModules: DealershipModule[];
+  canCreateStaff: boolean;
+  canCreateSystemAdmins: boolean;
+  maxAccountsCanCreate: number;
+  canDeleteUsers: boolean;
+  canResetPasswords: boolean;
+  canViewAuditLogs: boolean;
+  canAssignPermissions: boolean;
+  canExportBackup: boolean;
+}
 
 export interface UserSession {
   id: string;
@@ -333,9 +363,16 @@ export interface UserSession {
   department: string;
   branch: string;
   disabled: boolean;
+  isPermanentOwner?: boolean;
+  assignedPermissions?: string[];
+  adminLimits?: SystemAdminLimits;
+  accountsCreatedCount?: number;
+  createdByUid?: string;
   invitedBy?: string;
   avatarUrl?: string;
   phone?: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
 }
 
 export interface StaffInvite {
@@ -348,6 +385,8 @@ export interface StaffInvite {
   branch: string;
   status: 'Pending' | 'Accepted' | 'Revoked';
   invitedByUid: string;
+  assignedPermissions?: string[];
+  adminLimits?: SystemAdminLimits;
   createdAt?: string;
 }
 

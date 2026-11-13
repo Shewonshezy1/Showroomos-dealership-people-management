@@ -25,10 +25,6 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-.@]+$');
     }
 
-    function isBootstrapOwnerEmail() {
-      return isSignedIn() && request.auth.token.email == 'shewonshezy12@gmail.com';
-    }
-
     function userDocExists() {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
@@ -37,8 +33,19 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function isPermanentOwnerEmail() {
+      return isSignedIn()
+        && ('email' in request.auth.token)
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() == 'shewonshezy12@gmail.com';
+    }
+
     function isActiveStaff() {
-      return isSignedIn() && userDocExists() && currentUserDoc().disabled == false;
+      return isSignedIn()
+        && userDocExists()
+        && currentUserDoc().disabled == false
+        && (isPermanentOwnerEmail() || !('role' in request.auth.token) || request.auth.token.role == currentUserDoc().role)
+        && (!('disabled' in request.auth.token) || request.auth.token.disabled == false);
     }
 
     function hasRole(r) {
@@ -49,12 +56,26 @@ service cloud.firestore {
       return isActiveStaff() && (currentUserDoc().role in roles);
     }
 
+    function isSuperAdmin() {
+      return isPermanentOwnerEmail() || hasRole('super_admin');
+    }
+
+    // Evaluates role defaults OR per-user assignedPermissions / System Admin explicit grants
+    function hasPermOrRole(roles, perm) {
+      return isSuperAdmin()
+        || (isActiveStaff() && (
+          ('assignedPermissions' in currentUserDoc() && currentUserDoc().assignedPermissions is list)
+            ? (perm in currentUserDoc().assignedPermissions)
+            : (currentUserDoc().role in roles)
+        ));
+    }
+
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
 
     function isValidRoleName(r) {
-      return r is string && r.size() <= 32 && r in ['admin', 'general_manager', 'sales', 'finance', 'hr', 'service', 'stock'];
+      return r is string && r.size() <= 32 && r in ['super_admin', 'admin', 'general_manager', 'sales', 'finance', 'hr', 'service', 'stock'];
     }
 
     // ------------------------------------------------------------------
@@ -69,12 +90,17 @@ service cloud.firestore {
     // ------------------------------------------------------------------
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'email', 'fullName', 'role', 'disabled', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'fullName', 'role', 'designation', 'department', 'branch', 'disabled', 'invitedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'fullName', 'role', 'designation', 'department', 'branch', 'disabled', 'isPermanentOwner', 'assignedPermissions', 'adminLimits', 'accountsCreatedCount', 'createdByUid', 'invitedBy', 'createdAt', 'updatedAt'])
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
         && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
         && isValidRoleName(data.role)
         && data.disabled is bool
+        && (!('isPermanentOwner' in data) || data.isPermanentOwner is bool)
+        && (!('assignedPermissions' in data) || (data.assignedPermissions is list && data.assignedPermissions.size() <= 80))
+        && (!('adminLimits' in data) || data.adminLimits is map)
+        && (!('accountsCreatedCount' in data) || (data.accountsCreatedCount is number && data.accountsCreatedCount >= 0))
+        && (!('createdByUid' in data) || (data.createdByUid is string && data.createdByUid.size() <= 128))
         && (!('designation' in data) || (data.designation is string && data.designation.size() <= 100))
         && (!('department' in data) || (data.department is string && data.department.size() <= 80))
         && (!('branch' in data) || (data.branch is string && data.branch.size() <= 80))
@@ -83,40 +109,127 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    match /users/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || hasAnyRole(['admin', 'general_manager', 'hr']));
-      allow list: if hasAnyRole(['admin', 'general_manager', 'hr']);
+    function targetIsProtectedOwner(data) {
+      return data.email.lower() == 'shewonshezy12@gmail.com'
+        || ('isPermanentOwner' in data && data.isPermanentOwner == true);
+    }
 
-      // Bootstrap owner first-time admin activation OR invited staff first-time activation
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (
+        isOwner(userId)
+        || isSuperAdmin()
+        || hasPermOrRole(['general_manager', 'hr'], 'users.read')
+        || hasPermOrRole([], 'users.create_staff')
+        || hasPermOrRole([], 'users.create_admin')
+        || hasPermOrRole([], 'users.delete')
+        || hasPermOrRole([], 'users.reset_password')
+      );
+      allow list: if isSuperAdmin()
+        || hasPermOrRole(['general_manager', 'hr'], 'users.read')
+        || hasPermOrRole([], 'users.create_staff')
+        || hasPermOrRole([], 'users.create_admin')
+        || hasPermOrRole([], 'users.delete')
+        || hasPermOrRole([], 'users.reset_password');
+
+      // Invited staff activation, Permanent Owner auto-bootstrap, or Super Admin / authorized System Admin provisioning
       allow create: if isValidId(userId) && isSignedIn() && isValidUserProfile(incoming())
         && incoming().uid == userId
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && (
-          (isOwner(userId) && isBootstrapOwnerEmail() && incoming().email == request.auth.token.email && incoming().role == 'admin' && incoming().disabled == false)
+          (
+            isOwner(userId)
+            && isPermanentOwnerEmail()
+            && incoming().email.lower() == 'shewonshezy12@gmail.com'
+            && incoming().role == 'super_admin'
+            && incoming().disabled == false
+          )
           ||
           (
             isOwner(userId)
-            && incoming().email == request.auth.token.email
+            && incoming().email.lower() == request.auth.token.email.lower()
             && incoming().disabled == false
-            && exists(/databases/$(database)/documents/staff_invites/$(request.auth.token.email))
-            && get(/databases/$(database)/documents/staff_invites/$(request.auth.token.email)).data.status == 'Pending'
-            && get(/databases/$(database)/documents/staff_invites/$(request.auth.token.email)).data.role == incoming().role
+            && incoming().role != 'super_admin'
+            && exists(/databases/$(database)/documents/staff_invites/$(request.auth.token.email.lower()))
+            && get(/databases/$(database)/documents/staff_invites/$(request.auth.token.email.lower())).data.status == 'Pending'
+            && get(/databases/$(database)/documents/staff_invites/$(request.auth.token.email.lower())).data.role == incoming().role
           )
           ||
-          hasRole('admin')
+          isSuperAdmin()
+          ||
+          (
+            incoming().role != 'super_admin'
+            && (
+              incoming().role == 'admin'
+                ? hasPermOrRole([], 'users.create_admin')
+                : hasPermOrRole([], 'users.create_staff')
+            )
+          )
         );
 
-      // Only Admin can change role or disabled status; users CANNOT self-promote or re-enable themselves
       allow update: if isValidId(userId) && isValidUserProfile(incoming())
         && incoming().uid == existing().uid
         && incoming().email == existing().email
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && hasRole('admin')
-        && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'disabled', 'designation', 'department', 'branch', 'fullName', 'updatedAt']);
+        && (
+          // Permanent owner self-healing safeguard (always active super_admin)
+          (
+            isOwner(userId)
+            && isPermanentOwnerEmail()
+            && incoming().role == 'super_admin'
+            && incoming().disabled == false
+            && incoming().isPermanentOwner == true
+          )
+          ||
+          // System Admin atomic self-increment of accountsCreatedCount within maxAccountsCanCreate
+          (
+            isOwner(userId)
+            && hasRole('admin')
+            && 'adminLimits' in existing()
+            && existing().adminLimits is map
+            && 'maxAccountsCanCreate' in existing().adminLimits
+            && (!('accountsCreatedCount' in existing()) ? 0 : existing().accountsCreatedCount) < existing().adminLimits.maxAccountsCanCreate
+            && incoming().accountsCreatedCount == ((!('accountsCreatedCount' in existing()) ? 0 : existing().accountsCreatedCount) + 1)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['accountsCreatedCount', 'updatedAt'])
+          )
+          ||
+          // Admin management of other non-owner accounts
+          (
+            userId != request.auth.uid
+            && !targetIsProtectedOwner(existing())
+            && (
+              (
+                isSuperAdmin()
+                && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'disabled', 'designation', 'department', 'branch', 'fullName', 'adminLimits', 'assignedPermissions', 'accountsCreatedCount', 'updatedAt'])
+              )
+              ||
+              (
+                hasPermOrRole([], 'users.assign_role')
+                && existing().role != 'super_admin'
+                && incoming().role != 'super_admin'
+                && (incoming().role != 'admin' || hasPermOrRole([], 'users.create_admin'))
+                && !incoming().diff(existing()).affectedKeys().hasAny(['adminLimits', 'isPermanentOwner'])
+                && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'disabled', 'designation', 'department', 'branch', 'fullName', 'assignedPermissions', 'updatedAt'])
+              )
+              ||
+              (
+                hasPermOrRole([], 'users.toggle_disable')
+                && existing().role != 'super_admin'
+                && incoming().role == existing().role
+                && incoming().diff(existing()).affectedKeys().hasOnly(['disabled', 'updatedAt'])
+              )
+            )
+          )
+        );
 
-      allow delete: if false;
+      allow delete: if isValidId(userId)
+        && userId != request.auth.uid
+        && !targetIsProtectedOwner(existing())
+        && (
+          isSuperAdmin()
+          || (hasPermOrRole([], 'users.delete') && existing().role != 'super_admin')
+        );
     }
 
     // ------------------------------------------------------------------
@@ -137,10 +250,26 @@ service cloud.firestore {
     match /staff_directory/{userId} {
       allow get: if isValidId(userId) && isActiveStaff();
       allow list: if isActiveStaff();
-      allow create, update: if isValidId(userId) && isValidStaffDir(incoming())
+      allow create: if isValidId(userId) && isValidStaffDir(incoming())
         && incoming().updatedAt == request.time
-        && (hasRole('admin') || (isOwner(userId) && isSignedIn() && existsAfter(/databases/$(database)/documents/users/$(userId)) && getAfter(/databases/$(database)/documents/users/$(userId)).data.role == incoming().role));
-      allow delete: if false;
+        && (
+          (isOwner(userId) && isPermanentOwnerEmail() && incoming().role == 'super_admin' && incoming().active == true)
+          || isSuperAdmin()
+          || ((hasPermOrRole([], 'users.create_staff') || hasPermOrRole([], 'users.create_admin')) && incoming().role != 'super_admin')
+          || (isOwner(userId) && isSignedIn() && incoming().role != 'super_admin' && existsAfter(/databases/$(database)/documents/users/$(userId)) && getAfter(/databases/$(database)/documents/users/$(userId)).data.role == incoming().role)
+        );
+      allow update: if isValidId(userId) && isValidStaffDir(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(userId) && isPermanentOwnerEmail() && incoming().role == 'super_admin' && incoming().active == true)
+          || isSuperAdmin()
+          || ((hasPermOrRole([], 'users.assign_role') || hasPermOrRole([], 'users.toggle_disable')) && existing().role != 'super_admin' && incoming().role != 'super_admin')
+          || (isOwner(userId) && isSignedIn() && incoming().role != 'super_admin' && existsAfter(/databases/$(database)/documents/users/$(userId)) && getAfter(/databases/$(database)/documents/users/$(userId)).data.role == incoming().role)
+        );
+      allow delete: if isValidId(userId)
+        && userId != request.auth.uid
+        && (!exists(/databases/$(database)/documents/users/$(userId)) || !targetIsProtectedOwner(get(/databases/$(database)/documents/users/$(userId)).data))
+        && (isSuperAdmin() || (hasPermOrRole([], 'users.delete') && existing().role != 'super_admin'));
     }
 
     // ------------------------------------------------------------------
@@ -148,12 +277,14 @@ service cloud.firestore {
     // ------------------------------------------------------------------
     function isValidInvite(data) {
       return data.keys().hasAll(['email', 'fullName', 'role', 'status', 'invitedByUid', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['email', 'fullName', 'role', 'designation', 'department', 'branch', 'status', 'invitedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'fullName', 'role', 'designation', 'department', 'branch', 'status', 'invitedByUid', 'adminLimits', 'assignedPermissions', 'createdAt', 'updatedAt'])
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
         && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
         && isValidRoleName(data.role)
         && data.status is string && data.status in ['Pending', 'Accepted', 'Revoked']
         && data.invitedByUid is string && data.invitedByUid.size() <= 128
+        && (!('adminLimits' in data) || data.adminLimits is map)
+        && (!('assignedPermissions' in data) || (data.assignedPermissions is list && data.assignedPermissions.size() <= 80))
         && (!('designation' in data) || (data.designation is string && data.designation.size() <= 100))
         && (!('department' in data) || (data.department is string && data.department.size() <= 80))
         && (!('branch' in data) || (data.branch is string && data.branch.size() <= 80))
@@ -162,28 +293,48 @@ service cloud.firestore {
     }
 
     match /staff_invites/{inviteId} {
-      allow get: if isValidId(inviteId) && (hasRole('admin') || (isSignedIn() && request.auth.token.email == inviteId));
-      allow list: if hasRole('admin');
+      allow get: if isValidId(inviteId) && (
+        isSuperAdmin()
+        || hasPermOrRole([], 'users.manage_invites')
+        || hasPermOrRole([], 'users.create_staff')
+        || hasPermOrRole([], 'users.create_admin')
+        || (isSignedIn() && request.auth.token.email.lower() == inviteId)
+      );
+      allow list: if isSuperAdmin()
+        || hasPermOrRole([], 'users.manage_invites')
+        || hasPermOrRole([], 'users.create_staff')
+        || hasPermOrRole([], 'users.create_admin');
       allow create: if isValidId(inviteId) && isValidInvite(incoming())
         && incoming().email == inviteId
         && incoming().status == 'Pending'
+        && incoming().role != 'super_admin'
+        && incoming().email.lower() != 'shewonshezy12@gmail.com'
         && incoming().invitedByUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && hasRole('admin');
+        && (
+          isSuperAdmin()
+          || (
+            (incoming().role == 'admin'
+              ? hasPermOrRole([], 'users.create_admin')
+              : (hasPermOrRole([], 'users.create_staff') || hasPermOrRole([], 'users.manage_invites')))
+            && 'adminLimits' in currentUserDoc()
+            && (!('accountsCreatedCount' in currentUserDoc()) ? 0 : currentUserDoc().accountsCreatedCount) < currentUserDoc().adminLimits.maxAccountsCanCreate
+          )
+        );
       allow update: if isValidId(inviteId) && isValidInvite(incoming())
         && incoming().email == existing().email
         && incoming().invitedByUid == existing().invitedByUid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          (hasRole('admin') && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'role', 'designation', 'department', 'branch', 'fullName', 'updatedAt']))
+          ((isSuperAdmin() || hasPermOrRole([], 'users.manage_invites')) && existing().role != 'super_admin' && incoming().role != 'super_admin' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'role', 'designation', 'department', 'branch', 'fullName', 'updatedAt']))
           ||
-          (isSignedIn() && request.auth.token.email == inviteId && existing().status == 'Pending' && incoming().status == 'Accepted'
+          (isSignedIn() && request.auth.token.email.lower() == inviteId && existing().status == 'Pending' && existing().role != 'super_admin' && incoming().status == 'Accepted'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
             && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)))
         );
-      allow delete: if false;
+      allow delete: if isValidId(inviteId) && (isSuperAdmin() || hasPermOrRole([], 'users.manage_invites'));
     }
 
     // ------------------------------------------------------------------
@@ -215,20 +366,20 @@ service cloud.firestore {
     }
 
     match /leads/{leadId} {
-      allow get: if isValidId(leadId) && hasAnyRole(['general_manager', 'sales']);
-      allow list: if hasAnyRole(['general_manager', 'sales']);
+      allow get: if isValidId(leadId) && hasPermOrRole(['general_manager', 'sales'], 'crm.read');
+      allow list: if hasPermOrRole(['general_manager', 'sales'], 'crm.read');
       allow create: if isValidId(leadId) && isValidLead(incoming())
         && incoming().createdByUid == request.auth.uid
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'sales']);
+        && hasPermOrRole(['general_manager', 'sales'], 'crm.write');
       allow update: if isValidId(leadId) && isValidLead(incoming())
         && incoming().createdByUid == existing().createdByUid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          hasAnyRole(['general_manager', 'sales'])
+          hasPermOrRole(['general_manager', 'sales'], 'crm.write')
           ||
-          (hasRole('finance') && incoming().status == 'Booked' && incoming().bookingId is string
+          (hasPermOrRole(['finance'], 'bookings.create') && incoming().status == 'Booked' && incoming().bookingId is string
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'bookingId', 'updatedAt']))
         );
       allow delete: if false;
@@ -263,26 +414,26 @@ service cloud.firestore {
       allow list: if isActiveStaff();
       allow create: if isValidId(bikeId) && isValidBike(incoming())
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'stock']);
+        && hasPermOrRole(['general_manager', 'stock'], 'inventory.bikes.write');
       allow update: if isValidId(bikeId) && isValidBike(incoming())
         && incoming().updatedAt == request.time
         && (
-          (hasAnyRole(['general_manager', 'stock']) && existing().status != 'Delivered')
+          (hasPermOrRole(['general_manager', 'stock'], 'inventory.bikes.write') && existing().status != 'Delivered')
           ||
-          (hasAnyRole(['general_manager', 'sales', 'finance'])
+          (hasPermOrRole(['general_manager', 'sales', 'finance'], 'bookings.create')
             && existing().status == 'Available'
             && incoming().status == 'Reserved'
             && incoming().allocatedBookingId is string
             && existsAfter(/databases/$(database)/documents/bookings/$(incoming().allocatedBookingId))
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'allocatedBookingId', 'updatedAt']))
           ||
-          (hasAnyRole(['general_manager', 'sales', 'finance'])
+          (hasPermOrRole(['general_manager', 'sales', 'finance'], 'bookings.cancel')
             && existing().status == 'Reserved'
             && incoming().status == 'Available'
             && incoming().allocatedBookingId == null
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'allocatedBookingId', 'updatedAt']))
           ||
-          (hasAnyRole(['general_manager', 'service'])
+          (hasPermOrRole(['general_manager', 'service'], 'delivery.complete_handover')
             && existing().status == 'Reserved'
             && incoming().status == 'Delivered'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
@@ -319,8 +470,8 @@ service cloud.firestore {
     }
 
     match /bookings/{bookingId} {
-      allow get: if isValidId(bookingId) && hasAnyRole(['general_manager', 'sales', 'finance', 'service', 'stock']);
-      allow list: if hasAnyRole(['general_manager', 'sales', 'finance', 'service', 'stock']);
+      allow get: if isValidId(bookingId) && (hasPermOrRole(['general_manager', 'sales', 'finance', 'service', 'stock'], 'bookings.read') || hasPermOrRole([], 'payments.read'));
+      allow list: if hasPermOrRole(['general_manager', 'sales', 'finance', 'service', 'stock'], 'bookings.read') || hasPermOrRole([], 'payments.read');
 
       // Creation: Sales CANNOT approve their own discounts or forge verifiedPaidLkr > 0
       allow create: if isValidId(bookingId) && isValidBooking(incoming())
@@ -334,7 +485,7 @@ service cloud.firestore {
         && incoming().finalPriceLkr == get(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.priceLkr
         && incoming().balanceLkr == incoming().finalPriceLkr
         && (!('discountStatus' in incoming()) || incoming().discountStatus in ['None', 'Pending'])
-        && hasAnyRole(['general_manager', 'sales', 'finance'])
+        && hasPermOrRole(['general_manager', 'sales', 'finance'], 'bookings.create')
         && exists(/databases/$(database)/documents/bikes/$(incoming().bikeId))
         && get(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.status == 'Available'
         && getAfter(/databases/$(database)/documents/bikes/$(incoming().bikeId)).data.status == 'Reserved'
@@ -348,25 +499,21 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && existing().status == 'Confirmed'
         && (
-          // Finance payment recording/verification/reversal recalculating verifiedPaidLkr & balanceLkr
-          (hasRole('finance')
+          (hasPermOrRole(['finance'], 'payments.verify')
             && incoming().balanceLkr == (existing().finalPriceLkr > incoming().verifiedPaidLkr ? existing().finalPriceLkr - incoming().verifiedPaidLkr : 0)
             && incoming().diff(existing()).affectedKeys().hasOnly(['payments', 'verifiedPaidLkr', 'balanceLkr', 'deliveryChecklist', 'timeline', 'updatedAt']))
           ||
-          // Sales recording unverified payment receipt without altering verifiedPaidLkr or balanceLkr
-          (hasRole('sales')
+          (hasPermOrRole(['sales'], 'payments.record_unverified')
             && incoming().verifiedPaidLkr == existing().verifiedPaidLkr
             && incoming().balanceLkr == existing().balanceLkr
             && incoming().diff(existing()).affectedKeys().hasOnly(['payments', 'timeline', 'updatedAt']))
           ||
-          // GM / Finance approving or rejecting discount
-          (hasAnyRole(['general_manager', 'finance'])
+          (hasPermOrRole(['general_manager', 'finance'], 'discounts.approve')
             && incoming().finalPriceLkr == (existing().totalPriceLkr - incoming().discountLkr + existing().accessoriesTotalLkr - existing().tradeInCreditLkr)
             && incoming().balanceLkr == (incoming().finalPriceLkr > existing().verifiedPaidLkr ? incoming().finalPriceLkr - existing().verifiedPaidLkr : 0)
             && incoming().diff(existing()).affectedKeys().hasOnly(['discountLkr', 'discountStatus', 'discountApprovedByUid', 'finalPriceLkr', 'balanceLkr', 'timeline', 'updatedAt']))
           ||
-          // GM / Finance applying an ALREADY APPROVED trade-in
-          (hasAnyRole(['general_manager', 'finance'])
+          (hasPermOrRole(['general_manager', 'finance'], 'tradein.approve')
             && incoming().appliedTradeInId is string
             && exists(/databases/$(database)/documents/trade_ins/$(incoming().appliedTradeInId))
             && get(/databases/$(database)/documents/trade_ins/$(incoming().appliedTradeInId)).data.status == 'Approved'
@@ -375,19 +522,16 @@ service cloud.firestore {
             && incoming().balanceLkr == (incoming().finalPriceLkr > existing().verifiedPaidLkr ? incoming().finalPriceLkr - existing().verifiedPaidLkr : 0)
             && incoming().diff(existing()).affectedKeys().hasOnly(['tradeInCreditLkr', 'appliedTradeInId', 'finalPriceLkr', 'balanceLkr', 'timeline', 'updatedAt']))
           ||
-          // Sales / Stock attaching or removing accessories (cannot modify discount, tradeIn, or verifiedPaidLkr)
-          (hasAnyRole(['general_manager', 'sales', 'stock'])
+          (hasPermOrRole(['general_manager', 'sales', 'stock'], 'bookings.attach_accessories')
             && incoming().finalPriceLkr == (existing().totalPriceLkr - existing().discountLkr + incoming().accessoriesTotalLkr - existing().tradeInCreditLkr)
             && incoming().balanceLkr == (incoming().finalPriceLkr > existing().verifiedPaidLkr ? incoming().finalPriceLkr - existing().verifiedPaidLkr : 0)
             && incoming().diff(existing()).affectedKeys().hasOnly(['accessories', 'accessoriesTotalLkr', 'finalPriceLkr', 'balanceLkr', 'timeline', 'updatedAt']))
           ||
-          // Service / GM updating PDI checklist (NOT paymentVerified!)
-          (hasAnyRole(['general_manager', 'service'])
+          (hasPermOrRole(['general_manager', 'service'], 'delivery.checklist_pdi')
             && incoming().deliveryChecklist.paymentVerified == existing().deliveryChecklist.paymentVerified
             && incoming().diff(existing()).affectedKeys().hasOnly(['deliveryChecklist', 'timeline', 'updatedAt']))
           ||
-          // Delivery completion gate (strictly requires balanceLkr == 0 and all checklist flags true)
-          (hasAnyRole(['general_manager', 'service'])
+          (hasPermOrRole(['general_manager', 'service'], 'delivery.complete_handover')
             && incoming().status == 'Delivered'
             && existing().balanceLkr == 0
             && existing().verifiedPaidLkr >= existing().finalPriceLkr
@@ -397,8 +541,7 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/bikes/$(existing().bikeId)).data.status == 'Delivered'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'deliveredAt', 'deliveredBy', 'timeline', 'updatedAt']))
           ||
-          // Booking cancellation releasing reserved bike
-          (hasAnyRole(['general_manager', 'sales', 'finance'])
+          (hasPermOrRole(['general_manager', 'sales', 'finance'], 'bookings.cancel')
             && incoming().status == 'Cancelled'
             && getAfter(/databases/$(database)/documents/bikes/$(existing().bikeId)).data.status == 'Available'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancellationReason', 'timeline', 'updatedAt']))
@@ -426,8 +569,8 @@ service cloud.firestore {
     }
 
     match /payments/{paymentId} {
-      allow get: if isValidId(paymentId) && hasAnyRole(['general_manager', 'sales', 'finance']);
-      allow list: if hasAnyRole(['general_manager', 'sales', 'finance']);
+      allow get: if isValidId(paymentId) && hasPermOrRole(['general_manager', 'sales', 'finance'], 'payments.read');
+      allow list: if hasPermOrRole(['general_manager', 'sales', 'finance'], 'payments.read');
 
       allow create: if isValidId(paymentId) && isValidPayment(incoming())
         && incoming().recordedByUid == request.auth.uid
@@ -435,13 +578,13 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && exists(/databases/$(database)/documents/bookings/$(incoming().bookingId))
         && (
-          (hasRole('sales')
+          (hasPermOrRole(['sales'], 'payments.record_unverified')
             && incoming().entryType == 'PAYMENT'
             && incoming().amountLkr > 0
             && incoming().amountLkr <= get(/databases/$(database)/documents/bookings/$(incoming().bookingId)).data.balanceLkr
             && incoming().isVerified == false)
           ||
-          (hasRole('finance') && (
+          (hasPermOrRole(['finance'], 'payments.verify') && (
             (incoming().entryType == 'PAYMENT'
               && incoming().amountLkr > 0
               && incoming().amountLkr <= get(/databases/$(database)/documents/bookings/$(incoming().bookingId)).data.balanceLkr)
@@ -461,7 +604,7 @@ service cloud.firestore {
         && incoming().reference == existing().reference
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && hasRole('finance')
+        && hasPermOrRole(['finance'], 'payments.verify')
         && (
           (existing().isVerified == false && incoming().isVerified == true && incoming().diff(existing()).affectedKeys().hasOnly(['isVerified', 'verifiedBy', 'verifiedByUid', 'verifiedAt', 'updatedAt']))
           ||
@@ -493,13 +636,13 @@ service cloud.firestore {
       allow list: if isActiveStaff();
       allow create: if isValidId(accessoryId) && isValidAccessory(incoming())
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'stock']);
+        && hasPermOrRole(['general_manager', 'stock'], 'inventory.accessories.write');
       allow update: if isValidId(accessoryId) && isValidAccessory(incoming())
         && incoming().updatedAt == request.time
         && (
-          hasAnyRole(['general_manager', 'stock'])
+          hasPermOrRole(['general_manager', 'stock'], 'inventory.accessories.write')
           ||
-          (hasAnyRole(['sales', 'finance']) && incoming().diff(existing()).affectedKeys().hasOnly(['stockQuantity', 'updatedAt']))
+          (hasPermOrRole(['sales', 'finance'], 'bookings.attach_accessories') && incoming().diff(existing()).affectedKeys().hasOnly(['stockQuantity', 'updatedAt']))
         );
       allow delete: if false;
     }
@@ -520,16 +663,16 @@ service cloud.firestore {
     }
 
     match /test_rides/{testRideId} {
-      allow get: if isValidId(testRideId) && hasAnyRole(['general_manager', 'sales', 'service']);
-      allow list: if hasAnyRole(['general_manager', 'sales', 'service']);
+      allow get: if isValidId(testRideId) && hasPermOrRole(['general_manager', 'sales', 'service'], 'testrides.read');
+      allow list: if hasPermOrRole(['general_manager', 'sales', 'service'], 'testrides.read');
       allow create: if isValidId(testRideId) && isValidTestRide(incoming())
         && incoming().createdByUid == request.auth.uid
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'sales']);
+        && hasPermOrRole(['general_manager', 'sales'], 'testrides.write');
       allow update: if isValidId(testRideId) && isValidTestRide(incoming())
         && incoming().createdByUid == existing().createdByUid
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'sales', 'service']);
+        && hasPermOrRole(['general_manager', 'sales', 'service'], 'testrides.write');
       allow delete: if false;
     }
 
@@ -548,20 +691,20 @@ service cloud.firestore {
     }
 
     match /trade_ins/{tradeInId} {
-      allow get: if isValidId(tradeInId) && hasAnyRole(['general_manager', 'sales', 'finance', 'service']);
-      allow list: if hasAnyRole(['general_manager', 'sales', 'finance', 'service']);
+      allow get: if isValidId(tradeInId) && hasPermOrRole(['general_manager', 'sales', 'finance', 'service'], 'tradein.read');
+      allow list: if hasPermOrRole(['general_manager', 'sales', 'finance', 'service'], 'tradein.read');
       allow create: if isValidId(tradeInId) && isValidTradeIn(incoming())
         && incoming().createdByUid == request.auth.uid
         && incoming().status == 'Pending Approval'
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'sales', 'service']);
+        && hasPermOrRole(['general_manager', 'sales', 'service'], 'tradein.create_estimate');
       allow update: if isValidId(tradeInId) && isValidTradeIn(incoming())
         && incoming().createdByUid == existing().createdByUid
         && incoming().updatedAt == request.time
         && (
-          hasAnyRole(['general_manager', 'finance'])
+          hasPermOrRole(['general_manager', 'finance'], 'tradein.approve')
           ||
-          (hasRole('service') && existing().status == 'Pending Approval' && incoming().status == 'Pending Approval'
+          (hasPermOrRole(['service'], 'tradein.inspect') && existing().status == 'Pending Approval' && incoming().status == 'Pending Approval'
             && incoming().diff(existing()).affectedKeys().hasOnly(['condition', 'mileageKm', 'notes', 'updatedAt']))
         );
       allow delete: if false;
@@ -582,16 +725,16 @@ service cloud.firestore {
     }
 
     match /employees/{employeeId} {
-      allow get: if isValidId(employeeId) && hasAnyRole(['hr', 'general_manager']);
-      allow list: if hasAnyRole(['hr', 'general_manager']);
+      allow get: if isValidId(employeeId) && hasPermOrRole(['hr', 'general_manager'], 'hr.directory.read');
+      allow list: if hasPermOrRole(['hr', 'general_manager'], 'hr.directory.read');
       allow create, update: if isValidId(employeeId) && isValidEmployee(incoming())
         && incoming().updatedAt == request.time
-        && hasRole('hr');
+        && hasPermOrRole(['hr'], 'hr.directory.write');
       allow delete: if false;
     }
 
     // ------------------------------------------------------------------
-    // 12. /employees_payroll/{employeeId} - STRICTLY HR-ONLY PAYROLL
+    // 12. /employees_payroll/{employeeId} - STRICTLY HR / SUPER_ADMIN OR EXPLICIT PAYROLL GRANT
     // ------------------------------------------------------------------
     function isValidPayroll(data) {
       return data.keys().hasAll(['employeeId', 'basicLkr', 'netIllustrativeLkr', 'updatedByUid', 'updatedAt'])
@@ -604,12 +747,11 @@ service cloud.firestore {
     }
 
     match /employees_payroll/{employeeId} {
-      // Strictly restricted to active HR role ONLY (denied to Sales, Admin, Finance, Service, Stock, GM)
-      allow get: if isValidId(employeeId) && hasRole('hr');
-      allow list: if hasRole('hr');
+      allow get: if isValidId(employeeId) && hasPermOrRole(['hr'], 'hr.payroll.read');
+      allow list: if hasPermOrRole(['hr'], 'hr.payroll.read');
       allow create, update: if isValidId(employeeId) && isValidPayroll(incoming())
         && incoming().updatedAt == request.time
-        && hasRole('hr');
+        && hasPermOrRole(['hr'], 'hr.payroll.write');
       allow delete: if false;
     }
 
@@ -628,16 +770,16 @@ service cloud.firestore {
     }
 
     match /leave_requests/{leaveId} {
-      allow get: if isValidId(leaveId) && hasAnyRole(['hr', 'general_manager']);
-      allow list: if hasAnyRole(['hr', 'general_manager']);
+      allow get: if isValidId(leaveId) && hasPermOrRole(['hr', 'general_manager'], 'hr.leaves.read');
+      allow list: if hasPermOrRole(['hr', 'general_manager'], 'hr.leaves.read');
       allow create: if isValidId(leaveId) && isValidLeave(incoming())
         && incoming().status == 'Pending'
         && incoming().updatedAt == request.time
-        && hasAnyRole(['hr', 'general_manager']);
+        && hasPermOrRole(['hr', 'general_manager'], 'hr.leaves.read');
       allow update: if isValidId(leaveId) && isValidLeave(incoming())
         && existing().status == 'Pending'
         && incoming().updatedAt == request.time
-        && hasAnyRole(['hr', 'general_manager']);
+        && hasPermOrRole(['hr', 'general_manager'], 'hr.leaves.decide');
       allow delete: if false;
     }
 
@@ -655,11 +797,11 @@ service cloud.firestore {
     }
 
     match /attendance/{attendanceId} {
-      allow get: if isValidId(attendanceId) && hasAnyRole(['hr', 'general_manager']);
-      allow list: if hasAnyRole(['hr', 'general_manager']);
+      allow get: if isValidId(attendanceId) && hasPermOrRole(['hr', 'general_manager'], 'hr.leaves.read');
+      allow list: if hasPermOrRole(['hr', 'general_manager'], 'hr.leaves.read');
       allow create, update: if isValidId(attendanceId) && isValidAttendance(incoming())
         && incoming().updatedAt == request.time
-        && hasRole('hr');
+        && hasPermOrRole(['hr'], 'hr.attendance.write');
       allow delete: if false;
     }
 
@@ -677,11 +819,11 @@ service cloud.firestore {
     }
 
     match /service_cards/{cardId} {
-      allow get: if isValidId(cardId) && hasAnyRole(['general_manager', 'service', 'stock']);
-      allow list: if hasAnyRole(['general_manager', 'service', 'stock']);
+      allow get: if isValidId(cardId) && hasPermOrRole(['general_manager', 'service', 'stock'], 'service.read');
+      allow list: if hasPermOrRole(['general_manager', 'service', 'stock'], 'service.read');
       allow create, update: if isValidId(cardId) && isValidServiceCard(incoming())
         && incoming().updatedAt == request.time
-        && hasAnyRole(['general_manager', 'service']);
+        && hasPermOrRole(['general_manager', 'service'], 'service.write');
       allow delete: if false;
     }
 
@@ -703,12 +845,15 @@ service cloud.firestore {
     }
 
     match /audit_logs/{logId} {
-      allow get: if isValidId(logId) && hasAnyRole(['admin', 'general_manager', 'finance']);
-      allow list: if hasAnyRole(['admin', 'general_manager', 'finance']);
+      allow get: if isValidId(logId) && hasPermOrRole(['general_manager', 'finance'], 'audit.view');
+      allow list: if hasPermOrRole(['general_manager', 'finance'], 'audit.view');
       allow create: if isValidId(logId) && isValidAuditLog(incoming())
         && incoming().createdAt == request.time
-        && isActiveStaff()
-        && incoming().actorRole == currentUserDoc().role;
+        && (
+          (isActiveStaff() && (isPermanentOwnerEmail() || incoming().actorRole == currentUserDoc().role))
+          ||
+          (isSignedIn() && incoming().action in ['LOGIN_SUCCEEDED', 'LOGIN_BLOCKED_UNINVITED', 'LOGIN_BLOCKED_DISABLED', 'OWNER_SUPER_ADMIN_AUTO_ASSIGNED', 'STAFF_INVITE_ACTIVATED'])
+        );
       allow update, delete: if false;
     }
 

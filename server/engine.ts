@@ -5,18 +5,32 @@
 
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { hasPermission } from '../src/auth/permissions.ts';
+import {
+  ALL_PERMISSIONS,
+  ALL_STAFF_ROLES,
+  DEALERSHIP_MODULES,
+  DEFAULT_RESTRICTED_ADMIN_LIMITS,
+  INVITABLE_STAFF_ROLES,
+  PERMANENT_SUPER_ADMIN_EMAIL,
+  SUPER_ADMIN_ONLY_PERMISSIONS,
+  buildPermissionsFromAdminLimits,
+  hasUserPermission,
+  isPermanentOwnerEmail,
+  isSuperAdminUser,
+} from '../src/auth/permissions.ts';
 import type { Permission } from '../src/auth/permissions.ts';
 import type {
   Accessory,
   AuditLogEntry,
   Bike,
   Booking,
+  DealershipModule,
   Employee,
   EmployeeSalary,
   LeaveRequest,
   PaymentRecord,
   StaffInvite,
+  SystemAdminLimits,
   TradeInValuation,
   UserRole,
   UserSession,
@@ -27,6 +41,7 @@ export interface VerifiedTokenClaims {
   email: string;
   emailVerified: boolean;
   name?: string;
+  customRole?: UserRole;
 }
 
 export type TokenVerifier = (idToken: string) => Promise<VerifiedTokenClaims>;
@@ -35,7 +50,9 @@ export interface DataStoreTx {
   getUserByUid(uid: string): Promise<UserSession | null>;
   getInviteByEmail(email: string): Promise<StaffInvite | null>;
   saveUser(user: UserSession): Promise<void>;
+  deleteUser?(uid: string): Promise<void>;
   saveInvite(invite: StaffInvite): Promise<void>;
+  deleteInvite?(email: string): Promise<void>;
   listUsers(): Promise<UserSession[]>;
   listInvites(): Promise<StaffInvite[]>;
 
@@ -85,12 +102,55 @@ export interface DataStore {
 export interface EngineOptions {
   verifyToken: TokenVerifier;
   store: DataStore;
-  bootstrapOwnerEmail?: string;
+  syncCustomClaims?: (uid: string, role: UserRole, disabled: boolean) => Promise<void>;
+  createAuthUser?: (input: { email: string; password: string; fullName: string }) => Promise<{ uid: string }>;
+  deleteAuthUser?: (uid: string) => Promise<void>;
+  resetAuthPassword?: (input: { uid: string; email: string; newPassword?: string }) => Promise<{ resetLink?: string }>;
 }
 
 interface AuthedRequest extends Request {
   staffUser?: UserSession;
   claims?: VerifiedTokenClaims;
+}
+
+const VALID_MODULES = new Set<DealershipModule>(DEALERSHIP_MODULES.map(m => m.id));
+
+function sanitizeAdminLimits(raw: unknown): SystemAdminLimits {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_RESTRICTED_ADMIN_LIMITS };
+  }
+  const obj = raw as Record<string, unknown>;
+  const modsRaw = Array.isArray(obj.allowedModules) ? obj.allowedModules : [];
+  const allowedModules = Array.from(
+    new Set(modsRaw.filter((m): m is DealershipModule => typeof m === 'string' && VALID_MODULES.has(m as DealershipModule)))
+  );
+  if (!allowedModules.includes('dashboard')) {
+    allowedModules.unshift('dashboard');
+  }
+  const maxNum = Number(obj.maxAccountsCanCreate);
+  return {
+    allowedModules,
+    canCreateStaff: Boolean(obj.canCreateStaff),
+    canCreateSystemAdmins: Boolean(obj.canCreateSystemAdmins),
+    maxAccountsCanCreate: Number.isFinite(maxNum) && maxNum >= 0 ? Math.floor(maxNum) : 0,
+    canDeleteUsers: Boolean(obj.canDeleteUsers),
+    canResetPasswords: Boolean(obj.canResetPasswords),
+    canViewAuditLogs: Boolean(obj.canViewAuditLogs),
+    canAssignPermissions: Boolean(obj.canAssignPermissions),
+    canExportBackup: Boolean(obj.canExportBackup),
+  };
+}
+
+function sanitizeAssignedPermissions(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const cleaned = Array.from(
+    new Set(
+      raw
+        .filter((p): p is Permission => typeof p === 'string' && (ALL_PERMISSIONS as readonly string[]).includes(p))
+        .filter(p => !SUPER_ADMIN_ONLY_PERMISSIONS.has(p))
+    )
+  );
+  return cleaned;
 }
 
 function nowIso(): string {
@@ -114,7 +174,7 @@ function nowFormattedDateTime(): string {
 
 export function createApiRouter(options: EngineOptions): express.Router {
   const router = express.Router();
-  const { verifyToken, store, bootstrapOwnerEmail = 'shewonshezy12@gmail.com' } = options;
+  const { verifyToken, store, syncCustomClaims, createAuthUser, deleteAuthUser, resetAuthPassword } = options;
 
   router.get('/health', (_req: Request, res: Response) => {
     const storeConfigured = store.isConfigured();
@@ -126,6 +186,52 @@ export function createApiRouter(options: EngineOptions): express.Router {
       timestamp: nowIso(),
     });
   });
+
+  // Ensure Permanent Owner (Shewonshezy12@gmail.com) is automatically assigned SUPER_ADMIN and cannot be stripped
+  const ensurePermanentOwnerTx = async (
+    tx: DataStoreTx,
+    claims: VerifiedTokenClaims
+  ): Promise<UserSession> => {
+    const existing = await tx.getUserByUid(claims.uid);
+    if (
+      existing &&
+      existing.role === 'super_admin' &&
+      !existing.disabled &&
+      existing.isPermanentOwner
+    ) {
+      return existing;
+    }
+    const ownerProfile: UserSession = {
+      ...(existing || {}),
+      id: claims.uid,
+      uid: claims.uid,
+      fullName: existing?.fullName || claims.name || 'Super Administrator / Owner',
+      email: PERMANENT_SUPER_ADMIN_EMAIL,
+      role: 'super_admin',
+      designation: 'Super Administrator / Owner',
+      department: existing?.department || 'Executive & Ownership',
+      branch: existing?.branch || 'Colombo Flagship Hub',
+      disabled: false,
+      isPermanentOwner: true,
+    };
+    await tx.saveUser(ownerProfile);
+    await tx.appendAuditLog({
+      id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      actorUid: claims.uid,
+      actorEmail: PERMANENT_SUPER_ADMIN_EMAIL,
+      actorRole: 'super_admin',
+      action: 'OWNER_SUPER_ADMIN_AUTO_ASSIGNED',
+      collection: 'users',
+      recordId: claims.uid,
+      changes: {
+        role: 'super_admin',
+        previousRole: existing?.role || null,
+        isPermanentOwner: true,
+      },
+      createdAt: nowIso(),
+    });
+    return ownerProfile;
+  };
 
   // Authentication middleware verifying Firebase ID token and active staff status on every request
   const requireAuth = async (req: AuthedRequest, res: Response, next: NextFunction) => {
@@ -163,18 +269,41 @@ export function createApiRouter(options: EngineOptions): express.Router {
     }
 
     try {
-      const staff = await store.runTransaction(async tx => tx.getUserByUid(claims.uid));
+      const isPermOwner = isPermanentOwnerEmail(claims.email);
+      let ownerAutoSynced = false;
+      const staff = await store.runTransaction(async tx => {
+        if (isPermOwner) {
+          const prev = await tx.getUserByUid(claims.uid);
+          if (!prev || prev.role !== 'super_admin' || prev.disabled || !prev.isPermanentOwner) {
+            ownerAutoSynced = true;
+          }
+          return ensurePermanentOwnerTx(tx, claims);
+        }
+        return tx.getUserByUid(claims.uid);
+      });
+
+      if (ownerAutoSynced && syncCustomClaims && staff) {
+        await syncCustomClaims(staff.uid, 'super_admin', false);
+      }
+
       if (!staff) {
         res.status(403).json({
-          error: 'Account not provisioned. An administrator must invite and approve your staff profile.',
+          error: 'Account not provisioned. Only the Super Administrator or an authorized System Administrator can create accounts.',
           code: 'ACCOUNT_NOT_PROVISIONED',
         });
         return;
       }
       if (staff.disabled) {
         res.status(403).json({
-          error: 'Staff account is disabled. Contact the System Administrator.',
+          error: 'Staff account is disabled. Contact the Super Administrator.',
           code: 'ACCOUNT_DISABLED',
+        });
+        return;
+      }
+      if (!isPermOwner && claims.customRole && claims.customRole !== staff.role) {
+        res.status(403).json({
+          error: 'Role claim mismatch. Please sign out and sign in again to refresh your access token.',
+          code: 'CLAIMS_OUT_OF_SYNC',
         });
         return;
       }
@@ -210,9 +339,9 @@ export function createApiRouter(options: EngineOptions): express.Router {
         res.status(403).json({ error: 'Authenticated active staff session required.' });
         return;
       }
-      if (!hasPermission(req.staffUser.role, perm)) {
+      if (!hasUserPermission(req.staffUser, perm)) {
         res.status(403).json({
-          error: `Access denied: role "${req.staffUser.role}" lacks permission "${perm}".`,
+          error: `Access denied: account lacks permission "${perm}".`,
           code: 'FORBIDDEN_ROLE',
         });
         return;
@@ -222,7 +351,8 @@ export function createApiRouter(options: EngineOptions): express.Router {
   };
 
   // POST /api/auth/activate-invite
-  // Cryptographically verifies token, checks Pending invite by verified token email (NEVER request body role!)
+  // Cryptographically verifies token; auto-assigns Permanent Super Admin for Shewonshezy12@gmail.com;
+  // otherwise checks Pending invite by verified token email (NEVER request body role!)
   router.post('/auth/activate-invite', async (req: AuthedRequest, res: Response) => {
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
@@ -253,19 +383,57 @@ export function createApiRouter(options: EngineOptions): express.Router {
     }
 
     try {
+      const emailLower = claims.email.toLowerCase();
       const profile = await store.runTransaction(async tx => {
+        if (isPermanentOwnerEmail(emailLower)) {
+          const owner = await ensurePermanentOwnerTx(tx, claims);
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: owner.uid,
+            actorEmail: owner.email,
+            actorRole: 'super_admin',
+            action: 'LOGIN_SUCCEEDED',
+            collection: 'auth',
+            recordId: owner.uid,
+            changes: { role: 'super_admin', isPermanentOwner: true },
+            createdAt: nowIso(),
+          });
+          return owner;
+        }
+
         const existing = await tx.getUserByUid(claims.uid);
         if (existing) {
           if (existing.disabled) {
+            await tx.appendAuditLog({
+              id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              actorUid: claims.uid,
+              actorEmail: emailLower,
+              actorRole: existing.role,
+              action: 'LOGIN_BLOCKED_DISABLED',
+              collection: 'auth',
+              recordId: claims.uid,
+              changes: { reason: 'Account disabled' },
+              createdAt: nowIso(),
+            });
             throw Object.assign(new Error('Staff account is disabled.'), { status: 403 });
           }
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: existing.uid,
+            actorEmail: existing.email,
+            actorRole: existing.role,
+            action: 'LOGIN_SUCCEEDED',
+            collection: 'auth',
+            recordId: existing.uid,
+            changes: { role: existing.role },
+            createdAt: nowIso(),
+          });
           return existing;
         }
 
-        const emailLower = claims.email.toLowerCase();
         const invite = await tx.getInviteByEmail(emailLower);
 
-        if (invite && invite.status === 'Pending') {
+        if (invite && invite.status === 'Pending' && invite.role !== 'super_admin') {
           const newUser: UserSession = {
             id: claims.uid,
             uid: claims.uid,
@@ -277,6 +445,8 @@ export function createApiRouter(options: EngineOptions): express.Router {
             branch: invite.branch || 'Colombo Flagship Hub',
             disabled: false,
             invitedBy: invite.invitedByUid,
+            ...(invite.adminLimits ? { adminLimits: invite.adminLimits, accountsCreatedCount: 0 } : {}),
+            ...(invite.assignedPermissions ? { assignedPermissions: invite.assignedPermissions } : {}),
           };
           await tx.saveUser(newUser);
           await tx.saveInvite({ ...invite, status: 'Accepted' });
@@ -291,37 +461,31 @@ export function createApiRouter(options: EngineOptions): express.Router {
             changes: { role: invite.role, inviteId: invite.id },
             createdAt: nowIso(),
           });
-          return newUser;
-        }
-
-        // Strict bootstrap owner email check (never accepts public bootstrap parameters!)
-        if (emailLower === bootstrapOwnerEmail.toLowerCase()) {
-          const adminUser: UserSession = {
-            id: claims.uid,
-            uid: claims.uid,
-            fullName: claims.name || 'System Administrator',
-            email: emailLower,
-            role: 'admin',
-            designation: 'System & Identity Administrator',
-            department: 'IT & Security',
-            branch: 'Colombo Flagship Hub',
-            disabled: false,
-            invitedBy: 'trusted-owner-bootstrap',
-          };
-          await tx.saveUser(adminUser);
           await tx.appendAuditLog({
             id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             actorUid: claims.uid,
             actorEmail: emailLower,
-            actorRole: 'admin',
-            action: 'BOOTSTRAP_OWNER_ACTIVATED',
-            collection: 'users',
+            actorRole: invite.role,
+            action: 'LOGIN_SUCCEEDED',
+            collection: 'auth',
             recordId: claims.uid,
-            changes: { role: 'admin' },
+            changes: { role: invite.role, firstActivation: true },
             createdAt: nowIso(),
           });
-          return adminUser;
+          return newUser;
         }
+
+        await tx.appendAuditLog({
+          id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          actorUid: claims.uid,
+          actorEmail: emailLower,
+          actorRole: 'sales',
+          action: 'LOGIN_BLOCKED_UNINVITED',
+          collection: 'auth',
+          recordId: claims.uid,
+          changes: { email: emailLower, reason: 'No active invitation or provisioned profile' },
+          createdAt: nowIso(),
+        });
 
         throw Object.assign(
           new Error('No pending staff invitation found for this email. Public self-registration is disabled.'),
@@ -329,11 +493,67 @@ export function createApiRouter(options: EngineOptions): express.Router {
         );
       });
 
+      if (syncCustomClaims) {
+        await syncCustomClaims(profile.uid, profile.role, profile.disabled);
+      }
+
       res.json({ user: profile });
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status || 500;
       res.status(status).json({ error: err instanceof Error ? err.message : 'Activation failed.' });
     }
+  });
+
+  // POST /api/auth/login-audit
+  // Records login attempts (including failed password attempts and blocked uninvited/unverified attempts)
+  router.post('/auth/login-audit', async (req: Request, res: Response) => {
+    if (!store.isConfigured()) {
+      res.status(202).json({ logged: false, reason: 'ADMIN_STORE_UNCONFIGURED' });
+      return;
+    }
+
+    const { outcome, email, reason } = req.body || {};
+    const allowedOutcomes = new Set([
+      'LOGIN_SUCCEEDED',
+      'LOGIN_FAILED',
+      'LOGIN_BLOCKED_UNINVITED',
+      'LOGIN_BLOCKED_DISABLED',
+      'LOGIN_BLOCKED_UNVERIFIED',
+    ]);
+    const action = typeof outcome === 'string' && allowedOutcomes.has(outcome) ? outcome : 'LOGIN_FAILED';
+
+    let verifiedClaims: VerifiedTokenClaims | null = null;
+    const header = req.headers.authorization;
+    if (header && header.startsWith('Bearer ')) {
+      try {
+        verifiedClaims = await verifyToken(header.slice('Bearer '.length).trim());
+      } catch {
+        verifiedClaims = null;
+      }
+    }
+
+    const actorEmail = (verifiedClaims?.email || String(email || 'unknown')).trim().toLowerCase().slice(0, 160);
+    const actorUid = verifiedClaims?.uid || 'anonymous-login-attempt';
+
+    await store.runTransaction(async tx => {
+      const existing = verifiedClaims ? await tx.getUserByUid(verifiedClaims.uid) : null;
+      await tx.appendAuditLog({
+        id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        actorUid,
+        actorEmail,
+        actorRole: existing?.role || (isPermanentOwnerEmail(actorEmail) ? 'super_admin' : 'sales'),
+        action,
+        collection: 'auth',
+        recordId: actorUid,
+        changes: {
+          email: actorEmail,
+          ...(reason ? { reason: String(reason).slice(0, 200) } : {}),
+        },
+        createdAt: nowIso(),
+      });
+    });
+
+    res.status(201).json({ logged: true });
   });
 
   // GET /api/auth/session
@@ -347,7 +567,7 @@ export function createApiRouter(options: EngineOptions): express.Router {
   });
 
   // -------------------------------------------------------------------------
-  // ADMIN IDENTITY & ROLE MANAGEMENT (Admin only; separated from financial/HR payroll)
+  // SUPER ADMIN & SYSTEM ADMIN IDENTITY / PERMISSIONS / USER LIFECYCLE
   // -------------------------------------------------------------------------
   router.get(
     '/admin/staff',
@@ -363,32 +583,211 @@ export function createApiRouter(options: EngineOptions): express.Router {
     }
   );
 
+  // POST /api/admin/users - Create new Staff User OR System Administrator account
   router.post(
-    '/admin/invites',
+    '/admin/users',
     requireAuth,
     requireStoreConfigured,
-    requirePerm('users.manage_invites'),
     async (req: AuthedRequest, res: Response) => {
       const actor = req.staffUser!;
-      const { email, fullName, role, designation, department, branch } = req.body || {};
+      const {
+        email,
+        fullName,
+        role,
+        password,
+        designation,
+        department,
+        branch,
+        adminLimits,
+        assignedPermissions,
+      } = req.body || {};
+
       if (!email || !fullName || !role) {
         res.status(400).json({ error: 'email, fullName, and role are required.' });
         return;
       }
-      const allowedRoles: UserRole[] = [
-        'admin',
-        'general_manager',
-        'sales',
-        'finance',
-        'hr',
-        'service',
-        'stock',
-      ];
-      if (!allowedRoles.includes(role)) {
+
+      const normalizedEmail = String(email).trim().toLowerCase();
+      if (!normalizedEmail.includes('@')) {
+        res.status(400).json({ error: 'Valid email address is required.' });
+        return;
+      }
+      if (isPermanentOwnerEmail(normalizedEmail)) {
+        res.status(403).json({
+          error: 'Permanent Super Administrator / Owner account cannot be created or overwritten here.',
+          code: 'PERMANENT_OWNER_PROTECTED',
+        });
+        return;
+      }
+      if (!ALL_STAFF_ROLES.includes(role)) {
         res.status(400).json({ error: 'Invalid role specified.' });
         return;
       }
-      const normalizedEmail = String(email).trim().toLowerCase();
+
+      const actorIsSuper = isSuperAdminUser(actor);
+      if (role === 'super_admin' && !actorIsSuper) {
+        res.status(403).json({
+          error: 'Only the Super Administrator / Owner can grant Super Administrator privileges.',
+          code: 'FORBIDDEN_SUPER_ADMIN_ESCALATION',
+        });
+        return;
+      }
+      if (role === 'admin' && !hasUserPermission(actor, 'users.create_admin')) {
+        res.status(403).json({
+          error: 'Access denied: you do not have permission to create System Administrator accounts.',
+          code: 'FORBIDDEN_ADMIN_CREATION',
+        });
+        return;
+      }
+      if (role !== 'admin' && role !== 'super_admin' && !hasUserPermission(actor, 'users.create_staff')) {
+        res.status(403).json({
+          error: 'Access denied: you do not have permission to create staff accounts.',
+          code: 'FORBIDDEN_STAFF_CREATION',
+        });
+        return;
+      }
+
+      const cleanLimits = role === 'admin' ? sanitizeAdminLimits(adminLimits) : undefined;
+      const cleanPerms =
+        role === 'super_admin'
+          ? undefined
+          : sanitizeAssignedPermissions(
+              assignedPermissions !== undefined
+                ? assignedPermissions
+                : cleanLimits
+                ? buildPermissionsFromAdminLimits(cleanLimits)
+                : undefined
+            );
+
+      // Check account creation quota BEFORE calling Firebase Auth user creation
+      if (!actorIsSuper) {
+        try {
+          await store.runTransaction(async tx => {
+            const freshActor = await tx.getUserByUid(actor.uid);
+            const maxAllowed = freshActor?.adminLimits?.maxAccountsCanCreate ?? 0;
+            const used = freshActor?.accountsCreatedCount ?? 0;
+            if (used >= maxAllowed) {
+              throw Object.assign(
+                new Error(
+                  `Account creation limit reached (${used}/${maxAllowed} accounts created). Ask the Super Administrator to increase your quota.`
+                ),
+                { status: 403, code: 'ACCOUNT_CREATION_LIMIT_REACHED' }
+              );
+            }
+          });
+        } catch (err: unknown) {
+          const status = (err as { status?: number })?.status || 500;
+          const code = (err as { code?: string })?.code;
+          res.status(status).json({ error: err instanceof Error ? err.message : 'Quota check failed.', code });
+          return;
+        }
+      }
+
+      // Mode 1: Direct account creation with password via Firebase Admin Auth
+      if (typeof password === 'string' && password.length > 0) {
+        if (password.length < 6) {
+          res.status(400).json({ error: 'Password must be at least 6 characters.' });
+          return;
+        }
+        if (!createAuthUser) {
+          res.status(503).json({
+            error: 'Server-side Firebase Admin Auth is unavailable to create password accounts directly.',
+            code: 'ADMIN_AUTH_UNCONFIGURED',
+          });
+          return;
+        }
+
+        let createdAuth: { uid: string };
+        try {
+          createdAuth = await createAuthUser({
+            email: normalizedEmail,
+            password,
+            fullName: String(fullName).trim(),
+          });
+        } catch (err: unknown) {
+          const status = (err as { status?: number })?.status || 500;
+          const code = (err as { code?: string })?.code;
+          res.status(status).json({
+            error: err instanceof Error ? err.message : 'Failed to create Firebase Auth user.',
+            code,
+          });
+          return;
+        }
+
+        try {
+          const newUser = await store.runTransaction(async tx => {
+            const freshActor = await tx.getUserByUid(actor.uid);
+            if (!actorIsSuper) {
+              const maxAllowed = freshActor?.adminLimits?.maxAccountsCanCreate ?? 0;
+              const used = freshActor?.accountsCreatedCount ?? 0;
+              if (used >= maxAllowed) {
+                throw Object.assign(
+                  new Error(`Account creation limit reached (${used}/${maxAllowed}).`),
+                  { status: 403, code: 'ACCOUNT_CREATION_LIMIT_REACHED' }
+                );
+              }
+              if (freshActor) {
+                await tx.saveUser({ ...freshActor, accountsCreatedCount: used + 1 });
+              }
+            }
+
+            const profile: UserSession = {
+              id: createdAuth.uid,
+              uid: createdAuth.uid,
+              fullName: String(fullName).trim(),
+              email: normalizedEmail,
+              role,
+              designation: String(designation || role).trim(),
+              department: String(department || 'Showroom Operations').trim(),
+              branch: String(branch || 'Colombo Flagship Hub').trim(),
+              disabled: false,
+              createdByUid: actor.uid,
+              invitedBy: actor.uid,
+              ...(cleanLimits ? { adminLimits: cleanLimits, accountsCreatedCount: 0 } : {}),
+              ...(cleanPerms ? { assignedPermissions: cleanPerms } : {}),
+            };
+            await tx.saveUser(profile);
+            await tx.appendAuditLog({
+              id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              actorUid: actor.uid,
+              actorEmail: actor.email,
+              actorRole: actor.role,
+              action: role === 'admin' ? 'SYSTEM_ADMIN_CREATED' : 'ACCOUNT_CREATED',
+              collection: 'users',
+              recordId: profile.uid,
+              changes: {
+                email: normalizedEmail,
+                role,
+                mode: 'direct_password',
+                ...(cleanLimits ? { adminLimits: cleanLimits } : {}),
+                ...(cleanPerms ? { assignedPermissionsCount: cleanPerms.length } : {}),
+              },
+              createdAt: nowIso(),
+            });
+            return profile;
+          });
+
+          if (syncCustomClaims) {
+            await syncCustomClaims(newUser.uid, newUser.role, false);
+          }
+          res.status(201).json({ user: newUser });
+          return;
+        } catch (err: unknown) {
+          const status = (err as { status?: number })?.status || 500;
+          const code = (err as { code?: string })?.code;
+          res.status(status).json({ error: err instanceof Error ? err.message : 'Account creation failed.', code });
+          return;
+        }
+      }
+
+      // Mode 2: Pre-approved invitation (for Google Sign-In or Email sign-in activation)
+      if (role === 'super_admin') {
+        res.status(403).json({
+          error: 'Super Administrator / Owner cannot be invited via pending email invites.',
+        });
+        return;
+      }
+
       const invite: StaffInvite = {
         id: normalizedEmail,
         email: normalizedEmail,
@@ -399,23 +798,182 @@ export function createApiRouter(options: EngineOptions): express.Router {
         branch: String(branch || 'Colombo Flagship Hub').trim(),
         status: 'Pending',
         invitedByUid: actor.uid,
+        ...(cleanLimits ? { adminLimits: cleanLimits } : {}),
+        ...(cleanPerms ? { assignedPermissions: cleanPerms } : {}),
         createdAt: nowIso(),
       };
+
+      try {
+        await store.runTransaction(async tx => {
+          const freshActor = await tx.getUserByUid(actor.uid);
+          if (!actorIsSuper) {
+            const maxAllowed = freshActor?.adminLimits?.maxAccountsCanCreate ?? 0;
+            const used = freshActor?.accountsCreatedCount ?? 0;
+            if (used >= maxAllowed) {
+              throw Object.assign(
+                new Error(`Account creation limit reached (${used}/${maxAllowed}).`),
+                { status: 403, code: 'ACCOUNT_CREATION_LIMIT_REACHED' }
+              );
+            }
+            if (freshActor) {
+              await tx.saveUser({ ...freshActor, accountsCreatedCount: used + 1 });
+            }
+          }
+          await tx.saveInvite(invite);
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: actor.uid,
+            actorEmail: actor.email,
+            actorRole: actor.role,
+            action: role === 'admin' ? 'SYSTEM_ADMIN_INVITE_CREATED' : 'ACCOUNT_CREATED',
+            collection: 'staff_invites',
+            recordId: invite.id,
+            changes: { email: normalizedEmail, role, mode: 'invite' },
+            createdAt: nowIso(),
+          });
+        });
+        res.status(201).json({ invite });
+      } catch (err: unknown) {
+        const status = (err as { status?: number })?.status || 500;
+        const code = (err as { code?: string })?.code;
+        res.status(status).json({ error: err instanceof Error ? err.message : 'Invite creation failed.', code });
+      }
+    }
+  );
+
+  router.post(
+    '/admin/invites',
+    requireAuth,
+    requireStoreConfigured,
+    async (req: AuthedRequest, res: Response) => {
+      const actor = req.staffUser!;
+      const { email, fullName, role, designation, department, branch, adminLimits, assignedPermissions } =
+        req.body || {};
+      if (!email || !fullName || !role) {
+        res.status(400).json({ error: 'email, fullName, and role are required.' });
+        return;
+      }
+      if (role === 'super_admin') {
+        res.status(403).json({
+          error: 'Super Administrator / Owner cannot be granted via staff email invitations.',
+        });
+        return;
+      }
+      if (!INVITABLE_STAFF_ROLES.includes(role)) {
+        res.status(400).json({ error: 'Invalid role specified.' });
+        return;
+      }
+
+      const actorIsSuper = isSuperAdminUser(actor);
+      if (role === 'admin' && !hasUserPermission(actor, 'users.create_admin')) {
+        res.status(403).json({
+          error: 'Access denied: you lack permission to invite System Administrators.',
+          code: 'FORBIDDEN_ADMIN_CREATION',
+        });
+        return;
+      }
+      if (role !== 'admin' && !hasUserPermission(actor, 'users.manage_invites') && !hasUserPermission(actor, 'users.create_staff')) {
+        res.status(403).json({
+          error: 'Access denied: you lack permission to invite staff accounts.',
+          code: 'FORBIDDEN_STAFF_CREATION',
+        });
+        return;
+      }
+
+      const normalizedEmail = String(email).trim().toLowerCase();
+      const cleanLimits = role === 'admin' ? sanitizeAdminLimits(adminLimits) : undefined;
+      const cleanPerms = sanitizeAssignedPermissions(
+        assignedPermissions !== undefined
+          ? assignedPermissions
+          : cleanLimits
+          ? buildPermissionsFromAdminLimits(cleanLimits)
+          : undefined
+      );
+
+      const invite: StaffInvite = {
+        id: normalizedEmail,
+        email: normalizedEmail,
+        fullName: String(fullName).trim(),
+        role,
+        designation: String(designation || role).trim(),
+        department: String(department || 'Showroom Operations').trim(),
+        branch: String(branch || 'Colombo Flagship Hub').trim(),
+        status: 'Pending',
+        invitedByUid: actor.uid,
+        ...(cleanLimits ? { adminLimits: cleanLimits } : {}),
+        ...(cleanPerms ? { assignedPermissions: cleanPerms } : {}),
+        createdAt: nowIso(),
+      };
+      try {
+        await store.runTransaction(async tx => {
+          const freshActor = await tx.getUserByUid(actor.uid);
+          if (!actorIsSuper) {
+            const maxAllowed = freshActor?.adminLimits?.maxAccountsCanCreate ?? 0;
+            const used = freshActor?.accountsCreatedCount ?? 0;
+            if (used >= maxAllowed) {
+              throw Object.assign(
+                new Error(`Account creation limit reached (${used}/${maxAllowed}).`),
+                { status: 403, code: 'ACCOUNT_CREATION_LIMIT_REACHED' }
+              );
+            }
+            if (freshActor) {
+              await tx.saveUser({ ...freshActor, accountsCreatedCount: used + 1 });
+            }
+          }
+          await tx.saveInvite(invite);
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: actor.uid,
+            actorEmail: actor.email,
+            actorRole: actor.role,
+            action: 'ACCOUNT_CREATED',
+            collection: 'staff_invites',
+            recordId: invite.id,
+            changes: { email: normalizedEmail, role, mode: 'invite' },
+            createdAt: nowIso(),
+          });
+        });
+        res.status(201).json({ invite });
+      } catch (err: unknown) {
+        const status = (err as { status?: number })?.status || 500;
+        const code = (err as { code?: string })?.code;
+        res.status(status).json({ error: err instanceof Error ? err.message : 'Invite creation failed.', code });
+      }
+    }
+  );
+
+  router.delete(
+    '/admin/invites/:email',
+    requireAuth,
+    requireStoreConfigured,
+    requirePerm('users.manage_invites'),
+    async (req: AuthedRequest, res: Response) => {
+      const actor = req.staffUser!;
+      const email = decodeURIComponent(String(req.params.email || '')).trim().toLowerCase();
+      if (!email) {
+        res.status(400).json({ error: 'Invite email is required.' });
+        return;
+      }
       await store.runTransaction(async tx => {
-        await tx.saveInvite(invite);
+        if (tx.deleteInvite) {
+          await tx.deleteInvite(email);
+        } else {
+          const inv = await tx.getInviteByEmail(email);
+          if (inv) await tx.saveInvite({ ...inv, status: 'Revoked' });
+        }
         await tx.appendAuditLog({
           id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           actorUid: actor.uid,
           actorEmail: actor.email,
           actorRole: actor.role,
-          action: 'STAFF_INVITE_CREATED',
+          action: 'INVITE_REVOKED',
           collection: 'staff_invites',
-          recordId: invite.id,
-          changes: { email: normalizedEmail, role },
+          recordId: email,
+          changes: { email },
           createdAt: nowIso(),
         });
       });
-      res.status(201).json({ invite });
+      res.json({ revoked: true });
     }
   );
 
@@ -428,17 +986,26 @@ export function createApiRouter(options: EngineOptions): express.Router {
       const actor = req.staffUser!;
       const targetUid = String(req.params.uid || '');
       const { role } = req.body || {};
-      const allowedRoles: UserRole[] = [
-        'admin',
-        'general_manager',
-        'sales',
-        'finance',
-        'hr',
-        'service',
-        'stock',
-      ];
-      if (!allowedRoles.includes(role)) {
+      if (!ALL_STAFF_ROLES.includes(role)) {
         res.status(400).json({ error: 'Invalid role specified.' });
+        return;
+      }
+      if (targetUid === actor.uid) {
+        res.status(403).json({ error: 'Administrators cannot modify their own role.' });
+        return;
+      }
+      const actorIsSuper = isSuperAdminUser(actor);
+      if (role === 'super_admin' && !actorIsSuper) {
+        res.status(403).json({
+          error: 'Access denied: restricted System Administrators cannot grant Super Administrator / Owner privileges.',
+          code: 'FORBIDDEN_SUPER_ADMIN_ESCALATION',
+        });
+        return;
+      }
+      if (role === 'admin' && !actorIsSuper && !actor.adminLimits?.canCreateSystemAdmins) {
+        res.status(403).json({
+          error: 'Access denied: you do not have permission to assign the System Administrator role.',
+        });
         return;
       }
       try {
@@ -447,26 +1014,146 @@ export function createApiRouter(options: EngineOptions): express.Router {
           if (!target) {
             throw Object.assign(new Error('Target staff account not found.'), { status: 404 });
           }
+          if (isPermanentOwnerEmail(target.email) || target.isPermanentOwner) {
+            throw Object.assign(
+              new Error('Permanent Super Administrator / Owner (Shewonshezy12@gmail.com) cannot be demoted or modified.'),
+              { status: 403 }
+            );
+          }
+          if (target.role === 'super_admin' && !actorIsSuper) {
+            throw Object.assign(
+              new Error('Access denied: restricted System Administrators cannot modify Super Administrator accounts.'),
+              { status: 403 }
+            );
+          }
+          if (target.role === 'super_admin' && role !== 'super_admin' && !target.disabled) {
+            const allUsers = await tx.listUsers();
+            const activeSuperAdmins = allUsers.filter(u => u.role === 'super_admin' && !u.disabled);
+            if (activeSuperAdmins.length <= 1) {
+              throw Object.assign(
+                new Error('Cannot demote the last active Super Administrator / Owner.'),
+                { status: 409 }
+              );
+            }
+          }
           const prevRole = target.role;
-          const nextUser: UserSession = { ...target, role };
+          const nextLimits =
+            role === 'admin'
+              ? target.adminLimits || { ...DEFAULT_RESTRICTED_ADMIN_LIMITS }
+              : undefined;
+          const nextUser: UserSession = {
+            ...target,
+            role,
+            ...(nextLimits ? { adminLimits: nextLimits } : { adminLimits: undefined }),
+          };
+          if (role !== 'admin') delete nextUser.adminLimits;
+          delete nextUser.assignedPermissions;
           await tx.saveUser(nextUser);
           await tx.appendAuditLog({
             id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             actorUid: actor.uid,
             actorEmail: actor.email,
             actorRole: actor.role,
-            action: 'STAFF_ROLE_UPDATED',
+            action: 'ROLE_CHANGE',
             collection: 'users',
             recordId: targetUid,
-            changes: { previousRole: prevRole, newRole: role },
+            changes: { targetEmail: target.email, previousRole: prevRole, newRole: role },
             createdAt: nowIso(),
           });
           return nextUser;
         });
+        if (syncCustomClaims) {
+          await syncCustomClaims(updated.uid, updated.role, updated.disabled);
+        }
         res.json({ user: updated });
       } catch (err: unknown) {
         const status = (err as { status?: number })?.status || 500;
         res.status(status).json({ error: err instanceof Error ? err.message : 'Role update failed.' });
+      }
+    }
+  );
+
+  // PATCH /api/admin/users/:uid/permissions - Assign granular permissions and System Admin limits
+  router.patch(
+    '/admin/users/:uid/permissions',
+    requireAuth,
+    requireStoreConfigured,
+    async (req: AuthedRequest, res: Response) => {
+      const actor = req.staffUser!;
+      const targetUid = String(req.params.uid || '');
+      const { adminLimits, assignedPermissions } = req.body || {};
+
+      const actorIsSuper = isSuperAdminUser(actor);
+      if (!actorIsSuper && !hasUserPermission(actor, 'users.assign_role')) {
+        res.status(403).json({
+          error: 'Access denied: you do not have permission to change account permissions.',
+        });
+        return;
+      }
+
+      try {
+        const updated = await store.runTransaction(async tx => {
+          const target = await tx.getUserByUid(targetUid);
+          if (!target) {
+            throw Object.assign(new Error('Target user not found.'), { status: 404 });
+          }
+          if (isPermanentOwnerEmail(target.email) || target.isPermanentOwner) {
+            throw Object.assign(
+              new Error('Permanent Super Administrator / Owner permissions cannot be restricted or removed.'),
+              { status: 403 }
+            );
+          }
+          if (target.role === 'super_admin' && !actorIsSuper) {
+            throw Object.assign(
+              new Error('Restricted System Administrators cannot alter Super Administrator permissions.'),
+              { status: 403 }
+            );
+          }
+          if (target.role === 'admin' && !actorIsSuper) {
+            throw Object.assign(
+              new Error('Only the Super Administrator / Owner can set System Administrator limits and permissions.'),
+              { status: 403 }
+            );
+          }
+
+          const nextUser: UserSession = { ...target };
+          if (target.role === 'admin' && adminLimits !== undefined) {
+            nextUser.adminLimits = sanitizeAdminLimits(adminLimits);
+            nextUser.assignedPermissions =
+              assignedPermissions !== undefined
+                ? sanitizeAssignedPermissions(assignedPermissions)
+                : buildPermissionsFromAdminLimits(nextUser.adminLimits);
+          } else if (assignedPermissions !== undefined) {
+            const clean = sanitizeAssignedPermissions(assignedPermissions);
+            if (clean) {
+              nextUser.assignedPermissions = clean;
+            }
+          }
+
+          await tx.saveUser(nextUser);
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: actor.uid,
+            actorEmail: actor.email,
+            actorRole: actor.role,
+            action: 'PERMISSION_CHANGE',
+            collection: 'users',
+            recordId: targetUid,
+            changes: {
+              targetEmail: target.email,
+              targetRole: target.role,
+              ...(nextUser.adminLimits ? { adminLimits: nextUser.adminLimits } : {}),
+              ...(nextUser.assignedPermissions ? { assignedPermissions: nextUser.assignedPermissions } : {}),
+            },
+            createdAt: nowIso(),
+          });
+          return nextUser;
+        });
+
+        res.json({ user: updated });
+      } catch (err: unknown) {
+        const status = (err as { status?: number })?.status || 500;
+        res.status(status).json({ error: err instanceof Error ? err.message : 'Permission update failed.' });
       }
     }
   );
@@ -488,11 +1175,34 @@ export function createApiRouter(options: EngineOptions): express.Router {
         res.status(400).json({ error: 'Administrators cannot disable their own active session.' });
         return;
       }
+      const actorIsSuper = isSuperAdminUser(actor);
       try {
         const updated = await store.runTransaction(async tx => {
           const target = await tx.getUserByUid(targetUid);
           if (!target) {
             throw Object.assign(new Error('Target user not found.'), { status: 404 });
+          }
+          if (isPermanentOwnerEmail(target.email) || target.isPermanentOwner) {
+            throw Object.assign(
+              new Error('Permanent Super Administrator / Owner (Shewonshezy12@gmail.com) cannot be deactivated.'),
+              { status: 403 }
+            );
+          }
+          if (target.role === 'super_admin' && !actorIsSuper) {
+            throw Object.assign(
+              new Error('Access denied: restricted System Administrators cannot modify Super Administrator status.'),
+              { status: 403 }
+            );
+          }
+          if (target.role === 'super_admin' && disabled && !target.disabled) {
+            const allUsers = await tx.listUsers();
+            const activeSuperAdmins = allUsers.filter(u => u.role === 'super_admin' && !u.disabled);
+            if (activeSuperAdmins.length <= 1) {
+              throw Object.assign(
+                new Error('Cannot disable the last active Super Administrator / Owner.'),
+                { status: 409 }
+              );
+            }
           }
           const nextUser: UserSession = { ...target, disabled };
           await tx.saveUser(nextUser);
@@ -501,18 +1211,177 @@ export function createApiRouter(options: EngineOptions): express.Router {
             actorUid: actor.uid,
             actorEmail: actor.email,
             actorRole: actor.role,
-            action: disabled ? 'STAFF_DISABLED' : 'STAFF_ENABLED',
+            action: disabled ? 'ACCOUNT_DEACTIVATED' : 'ACCOUNT_ACTIVATED',
             collection: 'users',
             recordId: targetUid,
-            changes: { disabled },
+            changes: { targetEmail: target.email, disabled },
             createdAt: nowIso(),
           });
           return nextUser;
         });
+        if (syncCustomClaims) {
+          await syncCustomClaims(updated.uid, updated.role, updated.disabled);
+        }
         res.json({ user: updated });
       } catch (err: unknown) {
         const status = (err as { status?: number })?.status || 500;
         res.status(status).json({ error: err instanceof Error ? err.message : 'Status update failed.' });
+      }
+    }
+  );
+
+  // POST /api/admin/users/:uid/reset-password
+  router.post(
+    '/admin/users/:uid/reset-password',
+    requireAuth,
+    requireStoreConfigured,
+    requirePerm('users.reset_password'),
+    async (req: AuthedRequest, res: Response) => {
+      const actor = req.staffUser!;
+      const targetUid = String(req.params.uid || '');
+      const { newPassword } = req.body || {};
+
+      if (newPassword !== undefined && (typeof newPassword !== 'string' || newPassword.length < 6)) {
+        res.status(400).json({ error: 'New password must be at least 6 characters.' });
+        return;
+      }
+
+      const actorIsSuper = isSuperAdminUser(actor);
+      try {
+        const target = await store.runTransaction(async tx => tx.getUserByUid(targetUid));
+        if (!target) {
+          res.status(404).json({ error: 'Target user not found.' });
+          return;
+        }
+        if (
+          ((isPermanentOwnerEmail(target.email) || target.isPermanentOwner) && !isPermanentOwnerEmail(actor.email)) ||
+          (target.role === 'super_admin' && !actorIsSuper)
+        ) {
+          res.status(403).json({
+            error: 'Access denied: cannot reset password of the Permanent Super Administrator / Owner.',
+            code: 'PERMANENT_OWNER_PROTECTED',
+          });
+          return;
+        }
+        if (!resetAuthPassword) {
+          res.status(503).json({
+            error: 'Server Admin Auth password reset is unavailable in this runtime.',
+            code: 'ADMIN_AUTH_UNCONFIGURED',
+          });
+          return;
+        }
+
+        const result = await resetAuthPassword({
+          uid: target.uid,
+          email: target.email,
+          newPassword: typeof newPassword === 'string' && newPassword.length > 0 ? newPassword : undefined,
+        });
+
+        await store.runTransaction(async tx => {
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: actor.uid,
+            actorEmail: actor.email,
+            actorRole: actor.role,
+            action: 'PASSWORD_RESET',
+            collection: 'users',
+            recordId: target.uid,
+            changes: {
+              targetEmail: target.email,
+              method: newPassword ? 'admin_password_set' : 'reset_link_generated',
+            },
+            createdAt: nowIso(),
+          });
+        });
+
+        res.json({
+          reset: true,
+          email: target.email,
+          ...(result.resetLink ? { resetLink: result.resetLink } : {}),
+        });
+      } catch (err: unknown) {
+        const status = (err as { status?: number })?.status || 500;
+        const code = (err as { code?: string })?.code;
+        res.status(status).json({ error: err instanceof Error ? err.message : 'Password reset failed.', code });
+      }
+    }
+  );
+
+  // DELETE /api/admin/users/:uid
+  router.delete(
+    '/admin/users/:uid',
+    requireAuth,
+    requireStoreConfigured,
+    requirePerm('users.delete'),
+    async (req: AuthedRequest, res: Response) => {
+      const actor = req.staffUser!;
+      const targetUid = String(req.params.uid || '');
+
+      if (targetUid === actor.uid) {
+        res.status(403).json({ error: 'Administrators cannot delete their own account.' });
+        return;
+      }
+
+      const actorIsSuper = isSuperAdminUser(actor);
+      try {
+        const target = await store.runTransaction(async tx => {
+          const found = await tx.getUserByUid(targetUid);
+          if (!found) {
+            throw Object.assign(new Error('Target user not found.'), { status: 404 });
+          }
+          if (isPermanentOwnerEmail(found.email) || found.isPermanentOwner) {
+            throw Object.assign(
+              new Error('Permanent Super Administrator / Owner (Shewonshezy12@gmail.com) cannot be deleted.'),
+              { status: 403, code: 'PERMANENT_OWNER_PROTECTED' }
+            );
+          }
+          if (found.role === 'super_admin' && !actorIsSuper) {
+            throw Object.assign(
+              new Error('Restricted System Administrators cannot delete Super Administrator accounts.'),
+              { status: 403 }
+            );
+          }
+          if (found.role === 'super_admin') {
+            const allUsers = await tx.listUsers();
+            const activeSuperAdmins = allUsers.filter(u => u.role === 'super_admin' && !u.disabled);
+            if (activeSuperAdmins.length <= 1 && activeSuperAdmins.some(u => u.uid === targetUid)) {
+              throw Object.assign(
+                new Error('Cannot delete the last active Super Administrator / Owner.'),
+                { status: 409 }
+              );
+            }
+          }
+          return found;
+        });
+
+        if (deleteAuthUser) {
+          await deleteAuthUser(target.uid);
+        }
+
+        await store.runTransaction(async tx => {
+          if (tx.deleteUser) {
+            await tx.deleteUser(target.uid);
+          } else {
+            await tx.saveUser({ ...target, disabled: true });
+          }
+          await tx.appendAuditLog({
+            id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            actorUid: actor.uid,
+            actorEmail: actor.email,
+            actorRole: actor.role,
+            action: 'ACCOUNT_DELETED',
+            collection: 'users',
+            recordId: target.uid,
+            changes: { deletedEmail: target.email, deletedRole: target.role },
+            createdAt: nowIso(),
+          });
+        });
+
+        res.json({ deleted: true, uid: target.uid });
+      } catch (err: unknown) {
+        const status = (err as { status?: number })?.status || 500;
+        const code = (err as { code?: string })?.code;
+        res.status(status).json({ error: err instanceof Error ? err.message : 'Account deletion failed.', code });
       }
     }
   );
@@ -1318,8 +2187,12 @@ export function createApiRouter(options: EngineOptions): express.Router {
     requirePerm('backup.export'),
     async (req: AuthedRequest, res: Response) => {
       const actor = req.staffUser!;
+      const includePayroll = hasUserPermission(actor, 'hr.payroll.read');
       const snapshot = await store.runTransaction(async tx => {
         const exported = await tx.exportAllCollections();
+        if (!includePayroll) {
+          delete exported.employees_payroll;
+        }
         await tx.appendAuditLog({
           id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           actorUid: actor.uid,
@@ -1328,6 +2201,7 @@ export function createApiRouter(options: EngineOptions): express.Router {
           action: 'DATABASE_BACKUP_EXPORTED',
           collection: 'system',
           recordId: 'full-snapshot',
+          changes: { includePayroll },
           createdAt: nowIso(),
         });
         return exported;
@@ -1340,7 +2214,7 @@ export function createApiRouter(options: EngineOptions): express.Router {
     '/backup/restore',
     requireAuth,
     requireStoreConfigured,
-    requirePerm('backup.export'),
+    requirePerm('backup.restore'),
     async (req: AuthedRequest, res: Response) => {
       const actor = req.staffUser!;
       const { snapshot } = req.body || {};
@@ -1348,8 +2222,14 @@ export function createApiRouter(options: EngineOptions): express.Router {
         res.status(400).json({ error: 'Valid JSON snapshot object is required.' });
         return;
       }
+      const sanitizedSnapshot: Record<string, unknown> = {
+        ...(snapshot as Record<string, unknown>),
+      };
+      // Audit logs are strictly immutable and cannot be edited or overwritten via restore
+      delete sanitizedSnapshot.audit_logs;
+
       await store.runTransaction(async tx => {
-        await tx.restoreAllCollections(snapshot);
+        await tx.restoreAllCollections(sanitizedSnapshot);
         await tx.appendAuditLog({
           id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           actorUid: actor.uid,

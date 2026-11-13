@@ -48,7 +48,6 @@ Configure these via your host's secret manager / environment panel (never commit
 | `FIREBASE_DATABASE_ID` | Optional | Named Firestore database ID (falls back to `firebase-applet-config.json` if omitted). |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Optional *(Alternative Secret)* | Full GCP Service Account JSON injected via Secret Manager **only** if the runtime's Application Default Credentials (ADC) do not hold IAM permissions on `cybernetic-stage-bv0ns`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional *(VM/File Fallback)* | File path to Service Account JSON on a non-GCP host where ADC is unavailable (never set alongside `FIREBASE_SERVICE_ACCOUNT_JSON`). |
-| `BOOTSTRAP_OWNER_EMAIL` | Optional | Verified email permitted to bootstrap the first `admin` profile if not yet provisioned via CLI. |
 | `APP_URL` | Optional | Target HTTPS URL (`https://showroom.client-domain.example`) for deployment records/external integrations. |
 
 ---
@@ -88,15 +87,15 @@ Complete these steps as soon as the client's final domain is provisioned:
    ```bash
    firebase deploy --only firestore:rules,firestore:indexes --project <PROJECT_ID>
    ```
-5. **Provision Initial Client Admin & Verify Isolation:**
+5. **Provision Initial Owner (`super_admin`) & Verify Isolation:**
    ```bash
    npx tsx scripts/provision-admin.ts \
-     --email "admin@clientdomain.lk" \
-     --name "Client IT Admin" \
-     --role admin \
+     --email "Shewonshezy12@gmail.com" \
+     --name "Super Administrator / Owner" \
+     --role super_admin \
      --branch "Colombo Flagship Hub"
    ```
-   - Smoke-test on the live HTTPS domain: Google/Email sign-in, uninvited-account rejection, Sales vs HR vs Finance RBAC boundaries, booking allocation, payment verification, delivery handover, and `/api/health` returning `adminStoreConfigured: true`.
+   - Smoke-test on the live HTTPS domain: sign out and sign back in to pick up custom claims, then verify Google/Email sign-in, uninvited-account rejection, restricted `admin` vs `super_admin` vs Sales vs HR vs Finance boundaries, booking allocation, payment verification, delivery handover, and `/api/health` returning `storeConfigured: true`.
 
 ---
 

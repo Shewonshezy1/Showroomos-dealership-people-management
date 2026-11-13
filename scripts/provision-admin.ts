@@ -4,19 +4,21 @@
  */
 
 /**
- * Trusted Server-Side First-Admin & Staff Provisioning Script
+ * Trusted Server-Side Owner (super_admin) & Staff Provisioning Script
  *
- * Usage:
- *   FIREBASE_SERVICE_ACCOUNT_JSON='...' npx tsx scripts/provision-admin.ts \
- *     --email owner@dealership.lk --name "Dealership Owner" --role admin
- *
- * Or using GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+ * Usage (Owner / super_admin):
+ *   npx tsx scripts/provision-admin.ts \
+ *     --email "Shewonshezy12@gmail.com" \
+ *     --name "Super Administrator / Owner" \
+ *     --role super_admin \
+ *     --branch "Colombo Flagship Hub"
  *
  * Security:
- * - Runs strictly out-of-band via trusted Admin SDK credentials (no public HTTP bootstrap endpoint).
- * - Resolves existing Firebase Auth user by email (or creates/invites cleanly if missing).
- * - Writes authoritative role document in `/users/{uid}`, `/staff_directory/{uid}`,
- *   and an immutable entry in `/audit_logs`.
+ * - Runs strictly out-of-band via trusted Admin SDK credentials (ADC, FIREBASE_SERVICE_ACCOUNT_JSON, or GOOGLE_APPLICATION_CREDENTIALS).
+ * - Never creates a public HTTP bootstrap endpoint or default password.
+ * - Resolves the existing Firebase Auth UID by email and verifies `emailVerified === true` before granting privileges.
+ * - Sets authoritative Firebase Auth custom claims `{ role, disabled: false }` AND atomically updates `/users/{uid}`, `/staff_directory/{uid}`, and `/audit_logs`.
+ * - Prevents accidental removal/demotion of the last active `super_admin`.
  */
 
 import 'dotenv/config';
@@ -42,6 +44,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 }
 
 const VALID_ROLES: UserRole[] = [
+  'super_admin',
   'admin',
   'general_manager',
   'sales',
@@ -54,11 +57,7 @@ const VALID_ROLES: UserRole[] = [
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const email = (args.email || '').trim().toLowerCase();
-  const fullName = (args.name || 'System Administrator').trim();
   const role = (args.role || 'admin') as UserRole;
-  const designation = (args.designation || `${role.toUpperCase()} Officer`).trim();
-  const department = (args.department || 'Showroom Management').trim();
-  const branch = (args.branch || 'Colombo Flagship Hub').trim();
 
   if (!email || !email.includes('@')) {
     console.error('Error: --email <staff-email> is required.');
@@ -68,6 +67,16 @@ async function main(): Promise<void> {
     console.error(`Error: --role must be one of: ${VALID_ROLES.join(', ')}`);
     process.exit(1);
   }
+
+  const defaultName = role === 'super_admin' ? 'Super Administrator / Owner' : 'System Administrator';
+  const defaultDesignation =
+    role === 'super_admin' ? 'Super Administrator / Owner' : `${role.toUpperCase()} Officer`;
+  const defaultDept = role === 'super_admin' ? 'Executive & Ownership' : 'Showroom Management';
+
+  const fullName = (args.name || defaultName).trim();
+  const designation = (args.designation || defaultDesignation).trim();
+  const department = (args.department || defaultDept).trim();
+  const branch = (args.branch || 'Colombo Flagship Hub').trim();
 
   const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
   const config = fs.existsSync(configPath)
@@ -89,9 +98,24 @@ async function main(): Promise<void> {
   let authUser;
   try {
     authUser = await auth.getUserByEmail(email);
-    console.log(`Found existing Firebase Auth user: uid=${authUser.uid}`);
-  } catch {
-    // User has not signed in via Google/Email yet — write authoritative pending invite
+    console.log(`Resolved Firebase Auth user: email=${email}, uid=${authUser.uid}, emailVerified=${authUser.emailVerified}`);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== 'auth/user-not-found') {
+      console.error(
+        `Firebase Auth lookup failed (${code || 'UNKNOWN_ERROR'}). Verify your ADC / service account IAM permissions (roles/firebaseauth.admin & roles/datastore.user) and quota project for "${projectId}".`
+      );
+      console.error(err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+    if (role === 'super_admin') {
+      console.error(
+        `Error: No existing Firebase Auth account found for ${email}. ` +
+          `super_admin must be granted strictly to an existing verified Firebase Auth UID (never auto-created with a default password or pending invite).`
+      );
+      process.exit(1);
+    }
+    // Non-owner roles may be pre-staged as an authoritative Pending staff_invite
     await db.collection('staff_invites').doc(email).set(
       {
         id: email,
@@ -109,17 +133,56 @@ async function main(): Promise<void> {
       { merge: true }
     );
     console.log(
-      `Firebase Auth account not created yet for ${email}. Created authoritative Pending invite with role="${role}". Staff member may now sign in once to activate.`
+      `Firebase Auth account not created yet for ${email}. Created authoritative Pending invite with role="${role}".`
     );
     process.exit(0);
   }
 
-  // Provision active user profile & public directory entry atomically
+  if (!authUser.emailVerified) {
+    console.error(
+      `Refusing to grant role="${role}" to ${email} (uid=${authUser.uid}): Firebase Auth account email is NOT verified (emailVerified=false).`
+    );
+    process.exit(1);
+  }
+
+  if (authUser.disabled) {
+    console.error(
+      `Refusing to provision ${email} (uid=${authUser.uid}): account is disabled in Firebase Authentication.`
+    );
+    process.exit(1);
+  }
+
+  // Prevent demoting the last active super_admin via CLI accidentally
+  if (role !== 'super_admin') {
+    const existingTarget = await db.collection('users').doc(authUser.uid).get();
+    if (existingTarget.exists && existingTarget.data()?.role === 'super_admin' && !existingTarget.data()?.disabled) {
+      const activeOwners = await db
+        .collection('users')
+        .where('role', '==', 'super_admin')
+        .where('disabled', '==', false)
+        .get();
+      if (activeOwners.size <= 1) {
+        console.error(
+          `Refusing to demote ${email} (uid=${authUser.uid}) to "${role}": they are the last active Super Administrator / Owner.`
+        );
+        process.exit(1);
+      }
+    }
+  }
+
+  // 1. Set authoritative Firebase Auth Custom Claims
+  await auth.setCustomUserClaims(authUser.uid, {
+    role,
+    disabled: false,
+  });
+
+  // 2. Atomically write Firestore user profile, staff directory, and immutable audit log
   await db.runTransaction(async tx => {
+    const userRef = db.collection('users').doc(authUser.uid);
+    const existingSnap = await tx.get(userRef);
     tx.set(
-      db.collection('users').doc(authUser.uid),
+      userRef,
       {
-        id: authUser.uid,
         uid: authUser.uid,
         email,
         fullName,
@@ -130,7 +193,7 @@ async function main(): Promise<void> {
         disabled: false,
         invitedBy: 'cli-provisioning-script',
         updatedAt: FieldValue.serverTimestamp(),
-        createdAt: FieldValue.serverTimestamp(),
+        ...(existingSnap.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
       },
       { merge: true }
     );
@@ -152,19 +215,22 @@ async function main(): Promise<void> {
     tx.set(db.collection('audit_logs').doc(`aud-prov-${Date.now()}`), {
       actorUid: 'cli-provisioning-script',
       actorEmail: 'system-cli',
-      actorRole: 'admin',
-      action: 'STAFF_PROVISIONED_CLI',
+      actorRole: role === 'super_admin' ? 'super_admin' : 'admin',
+      action: role === 'super_admin' ? 'OWNER_SUPER_ADMIN_PROVISIONED' : 'STAFF_PROVISIONED_CLI',
       collection: 'users',
       recordId: authUser.uid,
-      changes: { email, role, branch },
+      changes: { email, role, branch, customClaimsSynced: true },
       createdAt: FieldValue.serverTimestamp(),
     });
   });
 
-  console.log(`Provisioned active user ${email} (uid=${authUser.uid}) with role="${role}".`);
+  console.log(
+    `Successfully provisioned ${email} (uid=${authUser.uid}) with role="${role}" and synced Firebase Auth custom claims.`
+  );
+  console.log('IMPORTANT: The user must sign out and sign back in to refresh their Firebase ID token claims.');
 }
 
 main().catch(err => {
-  console.error('Provisioning failed:', err);
+  console.error('Provisioning failed:', err instanceof Error ? err.message : err);
   process.exit(1);
 });

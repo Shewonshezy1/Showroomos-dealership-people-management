@@ -27,8 +27,10 @@ import type {
   PaymentRecord,
   StaffInvite,
   TradeInValuation,
+  UserRole,
   UserSession,
 } from './src/types/index.ts';
+import { ALL_STAFF_ROLES } from './src/auth/permissions.ts';
 
 const firebaseConfigPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
 const firebaseConfig = fs.existsSync(firebaseConfigPath)
@@ -38,8 +40,6 @@ const firebaseConfig = fs.existsSync(firebaseConfigPath)
 const PROJECT_ID: string = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || '';
 const FIRESTORE_DB_ID: string =
   process.env.FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || '(default)';
-const BOOTSTRAP_OWNER_EMAIL: string =
-  process.env.BOOTSTRAP_OWNER_EMAIL || 'shewonshezy12@gmail.com';
 
 // Initialize Firebase Admin SDK:
 // 1. Uses FIREBASE_SERVICE_ACCOUNT_JSON if explicitly provided (alternative secret method).
@@ -146,6 +146,13 @@ async function getGooglePublicCerts(): Promise<Record<string, string>> {
   return cachedCerts;
 }
 
+function parseCustomRole(raw: unknown): UserRole | undefined {
+  if (typeof raw === 'string' && (ALL_STAFF_ROLES as readonly string[]).includes(raw)) {
+    return raw as UserRole;
+  }
+  return undefined;
+}
+
 async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedTokenClaims> {
   await adminProbePromise;
 
@@ -157,6 +164,7 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedTokenClai
         email: (decoded.email || '').toLowerCase(),
         emailVerified: Boolean(decoded.email_verified),
         name: decoded.name,
+        customRole: parseCustomRole(decoded.role),
       };
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code || '';
@@ -199,6 +207,7 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedTokenClai
     email: String(payload.email || '').toLowerCase(),
     emailVerified: Boolean(payload.email_verified),
     name: payload.name ? String(payload.name) : undefined,
+    customRole: parseCustomRole(payload.role),
   };
 }
 
@@ -250,6 +259,10 @@ class FirestoreAdminDataStore implements DataStore {
             { merge: true }
           );
         },
+        async deleteUser(uid) {
+          fsTx.delete(db.collection('users').doc(uid));
+          fsTx.delete(db.collection('staff_directory').doc(uid));
+        },
         async saveInvite(invite) {
           fsTx.set(
             db.collection('staff_invites').doc(invite.id),
@@ -260,6 +273,9 @@ class FirestoreAdminDataStore implements DataStore {
             },
             { merge: true }
           );
+        },
+        async deleteInvite(email) {
+          fsTx.delete(db.collection('staff_invites').doc(email));
         },
         async listUsers() {
           const snap = await fsTx.get(db.collection('users'));
@@ -448,6 +464,7 @@ class FirestoreAdminDataStore implements DataStore {
         },
         async restoreAllCollections(snapshot) {
           for (const [col, docs] of Object.entries(snapshot)) {
+            if (col === 'audit_logs') continue; // Audit logs are strictly immutable
             if (!Array.isArray(docs)) continue;
             for (const docObj of docs) {
               if (!docObj || typeof docObj !== 'object' || !('id' in docObj)) continue;
@@ -463,6 +480,90 @@ class FirestoreAdminDataStore implements DataStore {
   }
 }
 
+async function syncUserCustomClaims(uid: string, role: UserRole, disabled: boolean): Promise<void> {
+  if (!adminApp || !adminAuthReady) return;
+  try {
+    await getAdminAuth(adminApp).setCustomUserClaims(uid, { role, disabled });
+  } catch (err) {
+    console.warn(`Failed to sync custom claims for uid=${uid}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+async function createFirebaseAuthUser(input: {
+  email: string;
+  password: string;
+  fullName: string;
+}): Promise<{ uid: string }> {
+  if (!adminApp || !adminAuthReady) {
+    throw Object.assign(
+      new Error('Server Firebase Admin Auth is unconfigured or lacks IAM permissions to create password accounts directly.'),
+      { status: 503, code: 'ADMIN_AUTH_UNCONFIGURED' }
+    );
+  }
+  const auth = getAdminAuth(adminApp);
+  try {
+    const existing = await auth.getUserByEmail(input.email);
+    await auth.updateUser(existing.uid, {
+      password: input.password,
+      displayName: input.fullName,
+      emailVerified: true,
+      disabled: false,
+    });
+    return { uid: existing.uid };
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== 'auth/user-not-found') {
+      throw err;
+    }
+    const created = await auth.createUser({
+      email: input.email,
+      password: input.password,
+      displayName: input.fullName,
+      emailVerified: true,
+      disabled: false,
+    });
+    return { uid: created.uid };
+  }
+}
+
+async function deleteFirebaseAuthUser(uid: string): Promise<void> {
+  if (!adminApp || !adminAuthReady) {
+    throw Object.assign(
+      new Error('Server Firebase Admin Auth is unconfigured or lacks IAM permissions to delete Auth users.'),
+      { status: 503, code: 'ADMIN_AUTH_UNCONFIGURED' }
+    );
+  }
+  try {
+    await getAdminAuth(adminApp).deleteUser(uid);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== 'auth/user-not-found') {
+      throw err;
+    }
+  }
+}
+
+async function resetFirebaseAuthPassword(input: {
+  uid: string;
+  email: string;
+  newPassword?: string;
+}): Promise<{ resetLink?: string }> {
+  if (!adminApp || !adminAuthReady) {
+    throw Object.assign(
+      new Error('Server Firebase Admin Auth is unconfigured or lacks IAM permissions for server-side password resets.'),
+      { status: 503, code: 'ADMIN_AUTH_UNCONFIGURED' }
+    );
+  }
+  const auth = getAdminAuth(adminApp);
+  if (input.newPassword) {
+    await auth.updateUser(input.uid, { password: input.newPassword });
+    await auth.revokeRefreshTokens(input.uid);
+    return {};
+  }
+  const resetLink = await auth.generatePasswordResetLink(input.email);
+  return { resetLink };
+}
+
 async function startServer(): Promise<void> {
   await adminProbePromise;
   const app = express();
@@ -474,7 +575,10 @@ async function startServer(): Promise<void> {
     createApiRouter({
       verifyToken: verifyFirebaseIdToken,
       store,
-      bootstrapOwnerEmail: BOOTSTRAP_OWNER_EMAIL,
+      syncCustomClaims: syncUserCustomClaims,
+      createAuthUser: createFirebaseAuthUser,
+      deleteAuthUser: deleteFirebaseAuthUser,
+      resetAuthPassword: resetFirebaseAuthPassword,
     })
   );
 

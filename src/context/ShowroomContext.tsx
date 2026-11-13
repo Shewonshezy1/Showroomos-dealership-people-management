@@ -21,8 +21,9 @@ import {
 } from 'firebase/auth';
 import { auth, googleProvider, testFirestoreConnection } from '../firebase';
 import {
-  hasPermission,
-  canAccessView,
+  hasUserPermission,
+  canUserAccessView,
+  isSuperAdminUser,
   ROLE_LABELS,
   Permission,
 } from '../auth/permissions';
@@ -30,6 +31,7 @@ import {
   resolveOrActivateStaffProfile,
   subscribeAuthorizedCollections,
   createRequestId,
+  logLoginAttempt,
   fsCreateLead,
   fsUpdateLead,
   fsAddBike,
@@ -54,9 +56,15 @@ import {
   fsCreateTradeIn,
   fsDecideTradeIn,
   fsApplyTradeInAtomic,
+  fsCreateAccount,
   fsCreateInvite,
+  fsRevokeInvite,
   fsUpdateUserRoleOrStatus,
+  fsUpdateUserPermissions,
+  fsResetUserPassword,
+  fsDeleteUserAccount,
   fsExportDatabaseBackup,
+  CreateAccountInput,
 } from '../services/firestoreShowroomService';
 import {
   Bike,
@@ -70,6 +78,7 @@ import {
   UserRole,
   UserSession,
   StaffInvite,
+  SystemAdminLimits,
   AuditLogEntry,
   AppView,
   PaymentRecord,
@@ -244,13 +253,28 @@ interface ShowroomContextType {
   applyTradeInToBooking: (tradeInId: string, bookingId: string) => Promise<ActionResult>;
 
   // Admin & Identity Actions
+  createAccount: (
+    input: CreateAccountInput
+  ) => Promise<ActionResult & { message?: string }>;
   inviteStaff: (
     invite: Omit<StaffInvite, 'id' | 'status' | 'invitedByUid' | 'createdAt'>
   ) => Promise<ActionResult>;
+  revokeInvite: (email: string) => Promise<ActionResult>;
   updateStaffRoleOrStatus: (
     targetUid: string,
     updates: { role?: UserRole; disabled?: boolean }
   ) => Promise<ActionResult>;
+  updateUserPermissions: (
+    targetUid: string,
+    payload: { adminLimits?: SystemAdminLimits; assignedPermissions?: string[] }
+  ) => Promise<ActionResult>;
+  resetUserPassword: (
+    targetUser: UserSession,
+    newPassword?: string
+  ) => Promise<ActionResult & { resetLink?: string; message?: string }>;
+  deleteUserAccount: (
+    targetUser: UserSession
+  ) => Promise<ActionResult & { message?: string }>;
   exportDatabaseBackup: () => Promise<Record<string, unknown[]> | null>;
 
   // Notification Preview Modal (explicitly simulated)
@@ -408,7 +432,7 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       setAuthStatus('active');
       setAuthError(null);
 
-      if (!canAccessView(profile.role, currentView)) {
+      if (!canUserAccessView(profile, currentView)) {
         setCurrentView('dashboard');
       }
 
@@ -442,14 +466,14 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
     };
   }, [clearAllInMemoryData]);
 
-  // Combine employees with confidential payroll ONLY for HR role
+  // Combine employees with confidential payroll ONLY for HR / Super Admin
   const employees = useMemo<Employee[]>(() => {
-    const canReadPayroll = hasPermission(currentUser?.role, 'hr.payroll.read');
+    const canReadPayroll = hasUserPermission(currentUser, 'hr.payroll.read');
     return rawEmployees.map(emp => ({
       ...emp,
       salary: canReadPayroll && payrollsMap[emp.id] ? payrollsMap[emp.id] : ZERO_SALARY,
     }));
-  }, [rawEmployees, payrollsMap, currentUser?.role]);
+  }, [rawEmployees, payrollsMap, currentUser]);
 
   const signInWithGoogle = async (): Promise<boolean> => {
     setAuthError(null);
@@ -457,8 +481,12 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       await signInWithPopup(auth, googleProvider);
       return true;
     } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
       const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
       setAuthError(msg);
+      if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        void logLoginAttempt({ outcome: 'LOGIN_FAILED', email: 'google-oauth', reason: code || msg });
+      }
       return false;
     }
   };
@@ -470,6 +498,11 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       return true;
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code || '';
+      void logLoginAttempt({
+        outcome: 'LOGIN_FAILED',
+        email: email.trim().toLowerCase(),
+        reason: code || 'invalid_credentials',
+      });
       if (code === 'auth/operation-not-allowed' || code === 'auth/configuration-not-found') {
         setAuthError(
           'Email/Password provider is not enabled in Firebase Authentication Console yet. Use Company Google Sign-In or enable Email/Password in Firebase Console.'
@@ -520,13 +553,13 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   const can = useCallback(
-    (permission: Permission) => hasPermission(currentUser?.role, permission),
-    [currentUser?.role]
+    (permission: Permission) => hasUserPermission(currentUser, permission),
+    [currentUser]
   );
 
   const canView = useCallback(
-    (view: AppView) => canAccessView(currentUser?.role, view),
-    [currentUser?.role]
+    (view: AppView) => canUserAccessView(currentUser, view),
+    [currentUser]
   );
 
   const clearOperationError = () => setOperationError(null);
@@ -537,8 +570,8 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       setOperationError(msg);
       throw new Error(msg);
     }
-    if (!hasPermission(currentUser.role, permission)) {
-      const msg = `Access Denied: Your role (${ROLE_LABELS[currentUser.role]}) does not have permission to ${label}.`;
+    if (!hasUserPermission(currentUser, permission)) {
+      const msg = `Access Denied: Your account (${ROLE_LABELS[currentUser.role]}) does not have permission to ${label}.`;
       setOperationError(msg);
       throw new Error(msg);
     }
@@ -1148,15 +1181,51 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
   // Admin & Identity Actions
+  const createAccount = async (
+    input: CreateAccountInput
+  ): Promise<ActionResult & { message?: string }> => {
+    try {
+      const requiredPerm: Permission =
+        input.role === 'admin'
+          ? 'users.create_admin'
+          : input.role === 'super_admin'
+          ? 'users.assign_super_admin'
+          : hasUserPermission(currentUser, 'users.create_staff')
+          ? 'users.create_staff'
+          : 'users.manage_invites';
+      const actor = guardUserAndPerm(requiredPerm, 'create user accounts');
+      const res = await fsCreateAccount(actor, input);
+      return { success: true, message: res.message };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to create account.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
   const inviteStaff = async (
     invite: Omit<StaffInvite, 'id' | 'status' | 'invitedByUid' | 'createdAt'>
   ): Promise<ActionResult> => {
     try {
-      const actor = guardUserAndPerm('users.manage_invites', 'invite staff users');
+      const requiredPerm: Permission =
+        invite.role === 'admin' ? 'users.create_admin' : 'users.manage_invites';
+      const actor = guardUserAndPerm(requiredPerm, 'invite staff users');
       await fsCreateInvite(actor, invite);
       return { success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to invite staff member.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const revokeInvite = async (email: string): Promise<ActionResult> => {
+    try {
+      const actor = guardUserAndPerm('users.manage_invites', 'revoke staff invitations');
+      await fsRevokeInvite(actor, email);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to revoke invitation.';
       setOperationError(msg);
       return { success: false, error: msg };
     }
@@ -1171,7 +1240,7 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         guardUserAndPerm('users.assign_role', 'assign staff roles');
       }
       if (updates.disabled !== undefined) {
-        guardUserAndPerm('users.toggle_disable', 'disable or enable staff accounts');
+        guardUserAndPerm('users.toggle_disable', 'activate or deactivate accounts');
       }
       if (!currentUser) throw new Error('Not signed in.');
       if (targetUid === currentUser.uid && updates.disabled) {
@@ -1181,6 +1250,53 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       return { success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to update staff account.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const updateUserPermissions = async (
+    targetUid: string,
+    payload: { adminLimits?: SystemAdminLimits; assignedPermissions?: string[] }
+  ): Promise<ActionResult> => {
+    try {
+      if (!currentUser || currentUser.disabled) throw new Error('Not signed in.');
+      if (!isSuperAdminUser(currentUser) && !hasUserPermission(currentUser, 'users.assign_role')) {
+        throw new Error('Access Denied: you do not have permission to assign permissions.');
+      }
+      await fsUpdateUserPermissions(currentUser, targetUid, payload);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to update permissions.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const resetUserPassword = async (
+    targetUser: UserSession,
+    newPassword?: string
+  ): Promise<ActionResult & { resetLink?: string; message?: string }> => {
+    try {
+      const actor = guardUserAndPerm('users.reset_password', 'reset user passwords');
+      const result = await fsResetUserPassword(actor, targetUser, newPassword);
+      return { success: true, resetLink: result.resetLink, message: result.message };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to reset user password.';
+      setOperationError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  const deleteUserAccount = async (
+    targetUser: UserSession
+  ): Promise<ActionResult & { message?: string }> => {
+    try {
+      const actor = guardUserAndPerm('users.delete', 'delete user accounts');
+      const result = await fsDeleteUserAccount(actor, targetUser);
+      return { success: true, message: result.message };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete user account.';
       setOperationError(msg);
       return { success: false, error: msg };
     }
@@ -1277,8 +1393,13 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         addTradeInValuation,
         decideTradeIn,
         applyTradeInToBooking,
+        createAccount,
         inviteStaff,
+        revokeInvite,
         updateStaffRoleOrStatus,
+        updateUserPermissions,
+        resetUserPassword,
+        deleteUserAccount,
         exportDatabaseBackup,
         notificationModal,
         openNotificationModal,

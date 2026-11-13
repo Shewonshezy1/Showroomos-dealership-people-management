@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { useShowroom } from '../../context/ShowroomContext';
-import { ROLE_LABELS } from '../../auth/permissions';
+import { ROLE_LABELS, isSuperAdminUser } from '../../auth/permissions';
 import { AppView } from '../../types';
 import {
   LayoutDashboard,
@@ -127,7 +127,7 @@ export const Sidebar: React.FC = () => {
     },
     {
       id: 'admin',
-      label: 'Access & Audit Logs',
+      label: isSuperAdminUser(currentUser) ? 'Super Admin Console' : 'Access & Audit Logs',
       icon: ShieldCheck,
     },
   ];

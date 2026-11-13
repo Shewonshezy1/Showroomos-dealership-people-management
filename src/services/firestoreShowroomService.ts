@@ -5,6 +5,7 @@
 
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -19,15 +20,21 @@ import {
   writeBatch,
   Unsubscribe,
 } from 'firebase/firestore';
-import type { User as FirebaseUser } from 'firebase/auth';
+import { sendPasswordResetEmail, type User as FirebaseUser } from 'firebase/auth';
 import {
   auth,
-  BOOTSTRAP_OWNER_EMAIL,
   db,
   handleFirestoreError,
   OperationType,
 } from '../firebase';
-import { hasPermission } from '../auth/permissions';
+import {
+  DEFAULT_RESTRICTED_ADMIN_LIMITS,
+  PERMANENT_SUPER_ADMIN_EMAIL,
+  buildPermissionsFromAdminLimits,
+  hasUserPermission,
+  isPermanentOwnerEmail,
+  isSuperAdminUser,
+} from '../auth/permissions';
 import type {
   Accessory,
   AttendanceRecord,
@@ -43,6 +50,7 @@ import type {
   PaymentRecord,
   ServiceJobCard,
   StaffInvite,
+  SystemAdminLimits,
   TestRideRecord,
   TradeInValuation,
   UserRole,
@@ -65,40 +73,192 @@ export function createRequestId(prefix = 'req'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+async function getBearerHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+export type LoginAuditOutcome =
+  | 'LOGIN_SUCCEEDED'
+  | 'LOGIN_FAILED'
+  | 'LOGIN_BLOCKED_UNINVITED'
+  | 'LOGIN_BLOCKED_DISABLED'
+  | 'LOGIN_BLOCKED_UNVERIFIED';
+
+export async function logLoginAttempt(
+  payload: { outcome: LoginAuditOutcome; email: string; reason?: string },
+  fbUser?: FirebaseUser | null
+): Promise<void> {
+  const emailLower = (fbUser?.email || payload.email || 'unknown').trim().toLowerCase().slice(0, 160);
+  let serverLogged = false;
+  try {
+    const tokenUser = fbUser || auth.currentUser;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (tokenUser) {
+      headers.Authorization = `Bearer ${await tokenUser.getIdToken()}`;
+    }
+    const resp = await fetch('/api/auth/login-audit', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        outcome: payload.outcome,
+        email: emailLower,
+        reason: payload.reason,
+      }),
+    });
+    if (resp.status === 201) {
+      const json = (await resp.json().catch(() => ({}))) as { logged?: boolean };
+      serverLogged = Boolean(json.logged);
+    }
+  } catch {
+    serverLogged = false;
+  }
+
+  // Fallback to Firestore rules-permitted audit log when running in preview without server Admin SDK IAM
+  const signedUser = fbUser || auth.currentUser;
+  if (!serverLogged && signedUser && signedUser.emailVerified) {
+    try {
+      const roleHint: UserRole = isPermanentOwnerEmail(emailLower) ? 'super_admin' : 'sales';
+      await setDoc(doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)), {
+        actorUid: signedUser.uid,
+        actorEmail: emailLower,
+        actorRole: roleHint,
+        action: payload.outcome,
+        collection: 'auth',
+        recordId: signedUser.uid,
+        changes: {
+          email: emailLower,
+          ...(payload.reason ? { reason: payload.reason.slice(0, 200) } : {}),
+        },
+        createdAt: serverTimestamp(),
+      });
+    } catch {
+      // Blocked or unprovisioned anonymous login failures cannot write directly to Firestore audit_logs
+    }
+  }
+}
+
 /**
  * Resolves the authenticated Firebase user's staff profile from Firestore.
- * Never creates roles from client state; only activates pre-approved Pending invites
- * or the configured bootstrap owner email (enforced by Firestore security rules).
+ * - Permanent Main Owner (Shewonshezy12@gmail.com) is ALWAYS automatically assigned super_admin.
+ * - Other accounts never self-register; only pre-provisioned /users or Pending /staff_invites activate.
  */
 export async function resolveOrActivateStaffProfile(
   fbUser: FirebaseUser
 ): Promise<{ status: 'active'; profile: UserSession } | { status: 'disabled' } | { status: 'uninvited' } | { status: 'unverified_email' }> {
-  if (!fbUser.emailVerified || !fbUser.email) {
+  if (!fbUser.email) {
+    return { status: 'unverified_email' };
+  }
+  const emailLower = fbUser.email.toLowerCase();
+  const isOwnerEmail = isPermanentOwnerEmail(emailLower);
+
+  if (!fbUser.emailVerified && !isOwnerEmail) {
+    void logLoginAttempt({ outcome: 'LOGIN_BLOCKED_UNVERIFIED', email: emailLower, reason: 'Email not verified' }, fbUser);
+    return { status: 'unverified_email' };
+  }
+  if (!fbUser.emailVerified) {
+    void logLoginAttempt({ outcome: 'LOGIN_BLOCKED_UNVERIFIED', email: emailLower, reason: 'Email not verified' }, fbUser);
     return { status: 'unverified_email' };
   }
 
-  const emailLower = fbUser.email.toLowerCase();
   const userRef = doc(db, 'users', fbUser.uid);
 
   let existingSnap;
   try {
     existingSnap = await getDoc(userRef);
   } catch (err) {
-    // Permission error or unprovisioned profile check
     console.warn('Initial user profile check:', err);
   }
 
   if (existingSnap && existingSnap.exists()) {
     const data = existingSnap.data() as UserSession;
+
+    // Permanent Owner protection: ensure Shewonshezy12@gmail.com is always active super_admin
+    if (isOwnerEmail && (data.role !== 'super_admin' || data.disabled || !data.isPermanentOwner)) {
+      try {
+        await runTransaction(db, async tx => {
+          const snap = await tx.get(userRef);
+          const cur = (snap.exists() ? snap.data() : data) as UserSession;
+          tx.set(
+            userRef,
+            {
+              uid: fbUser.uid,
+              email: PERMANENT_SUPER_ADMIN_EMAIL,
+              fullName: cur.fullName || fbUser.displayName || 'Super Administrator / Owner',
+              role: 'super_admin',
+              designation: 'Super Administrator / Owner',
+              department: cur.department || 'Executive & Ownership',
+              branch: cur.branch || 'Colombo Flagship Hub',
+              disabled: false,
+              isPermanentOwner: true,
+              createdAt: cur.createdAt || serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+          tx.set(
+            doc(db, 'staff_directory', fbUser.uid),
+            {
+              uid: fbUser.uid,
+              fullName: cur.fullName || fbUser.displayName || 'Super Administrator / Owner',
+              role: 'super_admin',
+              designation: 'Super Administrator / Owner',
+              department: cur.department || 'Executive & Ownership',
+              active: true,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+          tx.set(
+            doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+            {
+              actorUid: fbUser.uid,
+              actorEmail: PERMANENT_SUPER_ADMIN_EMAIL,
+              actorRole: 'super_admin',
+              action: 'OWNER_SUPER_ADMIN_AUTO_ASSIGNED',
+              collection: 'users',
+              recordId: fbUser.uid,
+              changes: { role: 'super_admin', previousRole: cur.role || null, isPermanentOwner: true },
+              createdAt: serverTimestamp(),
+            }
+          );
+        });
+      } catch (restoreErr) {
+        console.warn('Permanent owner sync check:', restoreErr);
+      }
+
+      const ownerProfile: UserSession = {
+        ...data,
+        id: fbUser.uid,
+        uid: fbUser.uid,
+        email: PERMANENT_SUPER_ADMIN_EMAIL,
+        role: 'super_admin',
+        disabled: false,
+        isPermanentOwner: true,
+        fullName: data.fullName || fbUser.displayName || 'Super Administrator / Owner',
+        designation: 'Super Administrator / Owner',
+        name: data.fullName || fbUser.displayName || 'Super Administrator / Owner',
+        roleLabel: 'Super Administrator / Owner',
+      };
+      void logLoginAttempt({ outcome: 'LOGIN_SUCCEEDED', email: emailLower, reason: 'permanent_owner' }, fbUser);
+      return { status: 'active', profile: ownerProfile };
+    }
+
     if (data.disabled) {
+      void logLoginAttempt({ outcome: 'LOGIN_BLOCKED_DISABLED', email: emailLower, reason: 'Account deactivated' }, fbUser);
       return { status: 'disabled' };
     }
+
+    void logLoginAttempt({ outcome: 'LOGIN_SUCCEEDED', email: emailLower, reason: `role:${data.role}` }, fbUser);
     return {
       status: 'active',
       profile: {
         ...data,
         id: fbUser.uid,
         uid: fbUser.uid,
+        ...(isOwnerEmail ? { isPermanentOwner: true, role: 'super_admin' as UserRole } : {}),
         name: data.fullName,
         roleLabel: data.designation,
       },
@@ -117,7 +277,7 @@ export async function resolveOrActivateStaffProfile(
     });
     if (resp.ok) {
       const json = (await resp.json()) as { user: UserSession };
-      if (json.user.disabled) return { status: 'disabled' };
+      if (json.user.disabled && !isOwnerEmail) return { status: 'disabled' };
       return {
         status: 'active',
         profile: {
@@ -129,7 +289,7 @@ export async function resolveOrActivateStaffProfile(
         },
       };
     }
-    if (resp.status === 403) {
+    if (resp.status === 403 && !isOwnerEmail) {
       const body = (await resp.json().catch(() => ({}))) as { code?: string; error?: string };
       if (body.error?.toLowerCase().includes('disabled')) return { status: 'disabled' };
       return { status: 'uninvited' };
@@ -139,7 +299,74 @@ export async function resolveOrActivateStaffProfile(
     // Fall back to Firestore rules-enforced activation
   }
 
-  // Rules-enforced Firestore activation (bootstrap owner OR Pending staff_invite)
+  // Permanent Owner auto-provisioning via Firestore rules if server Admin SDK was unavailable
+  if (isOwnerEmail) {
+    try {
+      const ownerProfile: UserSession = {
+        id: fbUser.uid,
+        uid: fbUser.uid,
+        fullName: fbUser.displayName || 'Super Administrator / Owner',
+        email: PERMANENT_SUPER_ADMIN_EMAIL,
+        role: 'super_admin',
+        designation: 'Super Administrator / Owner',
+        department: 'Executive & Ownership',
+        branch: 'Colombo Flagship Hub',
+        disabled: false,
+        isPermanentOwner: true,
+      };
+      await runTransaction(db, async tx => {
+        tx.set(userRef, {
+          uid: ownerProfile.uid,
+          email: PERMANENT_SUPER_ADMIN_EMAIL,
+          fullName: ownerProfile.fullName,
+          role: 'super_admin',
+          designation: ownerProfile.designation,
+          department: ownerProfile.department,
+          branch: ownerProfile.branch,
+          disabled: false,
+          isPermanentOwner: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        tx.set(doc(db, 'staff_directory', fbUser.uid), {
+          uid: ownerProfile.uid,
+          fullName: ownerProfile.fullName,
+          role: 'super_admin',
+          designation: ownerProfile.designation,
+          department: ownerProfile.department,
+          active: true,
+          updatedAt: serverTimestamp(),
+        });
+        tx.set(
+          doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+          {
+            actorUid: fbUser.uid,
+            actorEmail: PERMANENT_SUPER_ADMIN_EMAIL,
+            actorRole: 'super_admin',
+            action: 'OWNER_SUPER_ADMIN_AUTO_ASSIGNED',
+            collection: 'users',
+            recordId: fbUser.uid,
+            changes: { role: 'super_admin', isPermanentOwner: true },
+            createdAt: serverTimestamp(),
+          }
+        );
+      });
+      void logLoginAttempt({ outcome: 'LOGIN_SUCCEEDED', email: emailLower, reason: 'permanent_owner_bootstrap' }, fbUser);
+      return {
+        status: 'active',
+        profile: {
+          ...ownerProfile,
+          name: ownerProfile.fullName,
+          roleLabel: ownerProfile.designation,
+        },
+      };
+    } catch (ownerErr) {
+      console.error('Permanent owner bootstrap failed:', ownerErr);
+      return { status: 'uninvited' };
+    }
+  }
+
+  // Rules-enforced Firestore activation (Pending staff_invite ONLY)
   try {
     const inviteRef = doc(db, 'staff_invites', emailLower);
     let inviteData: StaffInvite | null = null;
@@ -152,23 +379,26 @@ export async function resolveOrActivateStaffProfile(
       // No invite readable for this user
     }
 
-    const isOwner = emailLower === BOOTSTRAP_OWNER_EMAIL.toLowerCase();
-    if (!isOwner && (!inviteData || inviteData.status !== 'Pending')) {
+    if (!inviteData || inviteData.status !== 'Pending' || inviteData.role === 'super_admin') {
+      void logLoginAttempt({ outcome: 'LOGIN_BLOCKED_UNINVITED', email: emailLower, reason: 'No pending invite' }, fbUser);
       return { status: 'uninvited' };
     }
 
-    const roleToAssign: UserRole = isOwner ? 'admin' : inviteData!.role;
+    const roleToAssign: UserRole = inviteData.role;
     const newProfile: UserSession = {
       id: fbUser.uid,
       uid: fbUser.uid,
-      fullName: isOwner ? fbUser.displayName || 'System Administrator' : inviteData!.fullName,
+      fullName: inviteData.fullName,
       email: emailLower,
       role: roleToAssign,
-      designation: isOwner ? 'System & Identity Administrator' : inviteData!.designation || roleToAssign,
-      department: isOwner ? 'IT & Security' : inviteData!.department || 'Showroom Operations',
-      branch: isOwner ? 'Colombo Flagship Hub' : inviteData!.branch || 'Colombo Flagship Hub',
+      designation: inviteData.designation || roleToAssign,
+      department: inviteData.department || 'Showroom Operations',
+      branch: inviteData.branch || 'Colombo Flagship Hub',
       disabled: false,
-      invitedBy: isOwner ? 'bootstrap-owner' : inviteData!.invitedByUid,
+      invitedBy: inviteData.invitedByUid,
+      createdByUid: inviteData.invitedByUid,
+      ...(inviteData.adminLimits ? { adminLimits: inviteData.adminLimits, accountsCreatedCount: 0 } : {}),
+      ...(inviteData.assignedPermissions ? { assignedPermissions: inviteData.assignedPermissions } : {}),
     };
 
     await runTransaction(db, async tx => {
@@ -182,6 +412,9 @@ export async function resolveOrActivateStaffProfile(
         branch: newProfile.branch,
         disabled: false,
         invitedBy: newProfile.invitedBy,
+        createdByUid: newProfile.createdByUid,
+        ...(newProfile.adminLimits ? { adminLimits: newProfile.adminLimits, accountsCreatedCount: 0 } : {}),
+        ...(newProfile.assignedPermissions ? { assignedPermissions: newProfile.assignedPermissions } : {}),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -194,14 +427,26 @@ export async function resolveOrActivateStaffProfile(
         active: true,
         updatedAt: serverTimestamp(),
       });
-      if (inviteData) {
-        tx.update(inviteRef, {
-          status: 'Accepted',
-          updatedAt: serverTimestamp(),
-        });
-      }
+      tx.update(inviteRef, {
+        status: 'Accepted',
+        updatedAt: serverTimestamp(),
+      });
+      tx.set(
+        doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+        {
+          actorUid: newProfile.uid,
+          actorEmail: newProfile.email,
+          actorRole: newProfile.role,
+          action: 'STAFF_INVITE_ACTIVATED',
+          collection: 'users',
+          recordId: newProfile.uid,
+          changes: { role: newProfile.role, inviteId: inviteData!.id },
+          createdAt: serverTimestamp(),
+        }
+      );
     });
 
+    void logLoginAttempt({ outcome: 'LOGIN_SUCCEEDED', email: emailLower, reason: `invite_activated:${newProfile.role}` }, fbUser);
     return {
       status: 'active',
       profile: {
@@ -212,6 +457,7 @@ export async function resolveOrActivateStaffProfile(
     };
   } catch (err) {
     console.error('Staff activation blocked:', err);
+    void logLoginAttempt({ outcome: 'LOGIN_BLOCKED_UNINVITED', email: emailLower, reason: 'Activation blocked' }, fbUser);
     return { status: 'uninvited' };
   }
 }
@@ -280,51 +526,51 @@ export function subscribeAuthorizedCollections(
     )
   );
 
-  // Only attach listeners to collections permitted for the authenticated user's role
-  if (hasPermission(user.role, 'crm.read')) {
+  // Only attach listeners to collections permitted for the authenticated user's effective permissions
+  if (hasUserPermission(user, 'crm.read')) {
     watch<Lead>('leads', callbacks.onLeads);
   } else {
     callbacks.onLeads([]);
   }
 
-  if (hasPermission(user.role, 'inventory.bikes.read')) {
+  if (hasUserPermission(user, 'inventory.bikes.read')) {
     watch<Bike>('bikes', callbacks.onBikes);
   } else {
     callbacks.onBikes([]);
   }
 
-  if (hasPermission(user.role, 'bookings.read')) {
+  if (hasUserPermission(user, 'bookings.read') || hasUserPermission(user, 'payments.read')) {
     watch<Booking>('bookings', callbacks.onBookings);
   } else {
     callbacks.onBookings([]);
   }
 
-  if (hasPermission(user.role, 'inventory.accessories.read')) {
+  if (hasUserPermission(user, 'inventory.accessories.read')) {
     watch<Accessory>('accessories', callbacks.onAccessories);
   } else {
     callbacks.onAccessories([]);
   }
 
-  if (hasPermission(user.role, 'testrides.read')) {
+  if (hasUserPermission(user, 'testrides.read')) {
     watch<TestRideRecord>('test_rides', callbacks.onTestRides);
   } else {
     callbacks.onTestRides([]);
   }
 
-  if (hasPermission(user.role, 'tradein.read')) {
+  if (hasUserPermission(user, 'tradein.read')) {
     watch<TradeInValuation>('trade_ins', callbacks.onTradeIns);
   } else {
     callbacks.onTradeIns([]);
   }
 
-  if (hasPermission(user.role, 'hr.directory.read')) {
+  if (hasUserPermission(user, 'hr.directory.read')) {
     watch<Employee>('employees', callbacks.onEmployees);
   } else {
     callbacks.onEmployees([]);
   }
 
-  // Strictly HR-only payroll collection
-  if (hasPermission(user.role, 'hr.payroll.read')) {
+  // Strictly HR / Super Admin payroll collection
+  if (hasUserPermission(user, 'hr.payroll.read')) {
     watch<{ id: string } & EmployeeSalary>('employees_payroll', items => {
       const map: Record<string, EmployeeSalary> = {};
       for (const item of items) {
@@ -341,7 +587,7 @@ export function subscribeAuthorizedCollections(
     callbacks.onPayrolls({});
   }
 
-  if (hasPermission(user.role, 'hr.leaves.read')) {
+  if (hasUserPermission(user, 'hr.leaves.read')) {
     watch<LeaveRequest>('leave_requests', callbacks.onLeaves);
     watch<AttendanceRecord>('attendance', callbacks.onAttendance);
   } else {
@@ -349,26 +595,37 @@ export function subscribeAuthorizedCollections(
     callbacks.onAttendance([]);
   }
 
-  if (hasPermission(user.role, 'service.read')) {
+  if (hasUserPermission(user, 'service.read')) {
     watch<ServiceJobCard>('service_cards', callbacks.onServiceCards);
   } else {
     callbacks.onServiceCards([]);
   }
 
-  if (hasPermission(user.role, 'users.read')) {
+  if (
+    hasUserPermission(user, 'users.read') ||
+    hasUserPermission(user, 'users.create_staff') ||
+    hasUserPermission(user, 'users.create_admin') ||
+    hasUserPermission(user, 'users.delete') ||
+    hasUserPermission(user, 'users.reset_password') ||
+    hasUserPermission(user, 'users.assign_role')
+  ) {
     watch<UserSession>('users', callbacks.onUsers);
   } else {
     callbacks.onUsers([]);
   }
 
-  if (hasPermission(user.role, 'users.manage_invites')) {
+  if (
+    hasUserPermission(user, 'users.manage_invites') ||
+    hasUserPermission(user, 'users.create_staff') ||
+    hasUserPermission(user, 'users.create_admin')
+  ) {
     watch<StaffInvite>('staff_invites', callbacks.onInvites);
   } else {
     callbacks.onInvites([]);
   }
 
-  if (hasPermission(user.role, 'audit.view')) {
-    watch<AuditLogEntry>('audit_logs', callbacks.onAuditLogs);
+  if (hasUserPermission(user, 'audit.view')) {
+    watch<AuditLogEntry>('audit_logs', callbacks.onAuditLogs, 'createdAt');
   } else {
     callbacks.onAuditLogs([]);
   }
@@ -1352,31 +1609,190 @@ export async function fsApplyTradeInAtomic(
   }
 }
 
+export interface CreateAccountInput {
+  email: string;
+  fullName: string;
+  role: UserRole;
+  password?: string;
+  designation?: string;
+  department?: string;
+  branch?: string;
+  adminLimits?: SystemAdminLimits;
+  assignedPermissions?: string[];
+}
+
+export async function fsCreateAccount(
+  actor: UserSession,
+  input: CreateAccountInput
+): Promise<{ mode: 'direct_password' | 'invite'; message: string }> {
+  const emailLower = input.email.trim().toLowerCase();
+  if (isPermanentOwnerEmail(emailLower)) {
+    throw new Error('Permanent Super Administrator / Owner account is reserved and cannot be overwritten.');
+  }
+
+  const actorIsSuper = isSuperAdminUser(actor);
+  if (input.role === 'super_admin' && !actorIsSuper) {
+    throw new Error('Only the Super Administrator / Owner can create another Super Administrator account.');
+  }
+  if (input.role === 'admin' && !hasUserPermission(actor, 'users.create_admin')) {
+    throw new Error('Access denied: you do not have permission to create System Administrator accounts.');
+  }
+  if (input.role !== 'admin' && input.role !== 'super_admin' && !hasUserPermission(actor, 'users.create_staff') && !hasUserPermission(actor, 'users.manage_invites')) {
+    throw new Error('Access denied: you do not have permission to create staff accounts.');
+  }
+
+  // Try server Admin API first (handles direct Firebase Auth password accounts + strict server quotas)
+  try {
+    const headers = await getBearerHeaders();
+    const resp = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        ...input,
+        email: emailLower,
+      }),
+    });
+    if (resp.ok) {
+      const mode = input.password ? 'direct_password' : 'invite';
+      return {
+        mode,
+        message:
+          mode === 'direct_password'
+            ? `Account created immediately for ${emailLower} with Firebase Auth credentials.`
+            : `Pre-approved ${input.role === 'admin' ? 'System Administrator' : 'Staff'} invitation issued for ${emailLower}.`,
+      };
+    }
+    const body = (await resp.json().catch(() => ({}))) as { error?: string; code?: string };
+    if (resp.status !== 503) {
+      throw new Error(body.error || 'Failed to create account.');
+    }
+    if (input.password && input.password.trim().length > 0) {
+      throw new Error(
+        body.error ||
+          'Direct email/password Auth creation requires server Firebase Admin SDK credentials. Leave Initial Password blank to create a pre-approved invite (sign-in activates automatically).'
+      );
+    }
+  } catch (err) {
+    if (err instanceof Error && !err.message.includes('Failed to fetch')) {
+      throw err;
+    }
+    if (input.password && input.password.trim().length > 0) {
+      throw new Error(
+        'Direct email/password Auth creation requires server Firebase Admin SDK credentials. Leave Initial Password blank to create a pre-approved invite.'
+      );
+    }
+  }
+
+  if (input.role === 'super_admin') {
+    throw new Error('Additional Super Administrator accounts require server Admin SDK provisioning.');
+  }
+
+  // Rules-enforced Firestore invite fallback (enforces System Admin maxAccountsCanCreate quota atomically)
+  const id = sanitizeId(emailLower);
+  const cleanLimits = input.role === 'admin' ? input.adminLimits || DEFAULT_RESTRICTED_ADMIN_LIMITS : undefined;
+  const cleanPerms =
+    input.assignedPermissions !== undefined
+      ? input.assignedPermissions
+      : cleanLimits
+      ? buildPermissionsFromAdminLimits(cleanLimits)
+      : undefined;
+
+  try {
+    await runTransaction(db, async tx => {
+      if (!actorIsSuper) {
+        const actorRef = doc(db, 'users', actor.uid);
+        const actorSnap = await tx.get(actorRef);
+        const freshActor = actorSnap.exists() ? (actorSnap.data() as UserSession) : actor;
+        const maxAllowed = freshActor.adminLimits?.maxAccountsCanCreate ?? 0;
+        const used = freshActor.accountsCreatedCount ?? 0;
+        if (used >= maxAllowed) {
+          throw new Error(
+            `Account creation quota reached (${used}/${maxAllowed}). Request an increase from the Super Administrator.`
+          );
+        }
+        tx.update(actorRef, {
+          accountsCreatedCount: used + 1,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      tx.set(doc(db, 'staff_invites', id), {
+        email: emailLower,
+        fullName: input.fullName.trim(),
+        role: input.role,
+        designation: (input.designation || input.role).trim(),
+        department: (input.department || 'Showroom Operations').trim(),
+        branch: (input.branch || 'Colombo 03 Flagship').trim(),
+        status: 'Pending',
+        invitedByUid: actor.uid,
+        ...(cleanLimits ? { adminLimits: cleanLimits } : {}),
+        ...(cleanPerms ? { assignedPermissions: cleanPerms } : {}),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      tx.set(
+        doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+        buildAuditEntry(
+          actor,
+          input.role === 'admin' ? 'SYSTEM_ADMIN_INVITE_CREATED' : 'ACCOUNT_CREATED',
+          'staff_invites',
+          id,
+          { email: emailLower, role: input.role, mode: 'invite' }
+        )
+      );
+    });
+    return {
+      mode: 'invite',
+      message: `Pre-approved ${input.role === 'admin' ? 'System Administrator' : 'Staff'} invitation saved for ${emailLower}.`,
+    };
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('quota reached')) throw err;
+    handleFirestoreError(err, OperationType.CREATE, `staff_invites/${id}`);
+  }
+}
+
 export async function fsCreateInvite(
   actor: UserSession,
   invite: Omit<StaffInvite, 'id' | 'status' | 'invitedByUid' | 'createdAt'>
 ): Promise<void> {
-  const emailLower = invite.email.trim().toLowerCase();
+  await fsCreateAccount(actor, {
+    email: invite.email,
+    fullName: invite.fullName,
+    role: invite.role,
+    designation: invite.designation,
+    department: invite.department,
+    branch: invite.branch,
+    adminLimits: invite.adminLimits,
+    assignedPermissions: invite.assignedPermissions,
+  });
+}
+
+export async function fsRevokeInvite(actor: UserSession, email: string): Promise<void> {
+  const emailLower = email.trim().toLowerCase();
   const id = sanitizeId(emailLower);
   try {
-    await setDoc(doc(db, 'staff_invites', id), {
-      email: emailLower,
-      fullName: invite.fullName.trim(),
-      role: invite.role,
-      designation: invite.designation.trim(),
-      department: invite.department.trim(),
-      branch: invite.branch.trim(),
-      status: 'Pending',
-      invitedByUid: actor.uid,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+    const headers = await getBearerHeaders();
+    const resp = await fetch(`/api/admin/invites/${encodeURIComponent(emailLower)}`, {
+      method: 'DELETE',
+      headers,
     });
+    if (resp.ok) return;
+    if (resp.status !== 503) {
+      const body = (await resp.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error || 'Failed to revoke invite.');
+    }
+  } catch (err) {
+    if (err instanceof Error && !err.message.includes('Failed to fetch')) throw err;
+  }
+
+  try {
+    await deleteDoc(doc(db, 'staff_invites', id));
     await setDoc(
-      doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}`)),
-      buildAuditEntry(actor, 'STAFF_INVITED', 'staff_invites', id, { role: invite.role })
+      doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+      buildAuditEntry(actor, 'INVITE_REVOKED', 'staff_invites', id, { email: emailLower })
     );
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, `staff_invites/${id}`);
+    handleFirestoreError(err, OperationType.DELETE, `staff_invites/${id}`);
   }
 }
 
@@ -1386,16 +1802,92 @@ export async function fsUpdateUserRoleOrStatus(
   updates: { role?: UserRole; disabled?: boolean }
 ): Promise<void> {
   const uId = sanitizeId(targetUid);
+  if (uId === actor.uid) {
+    throw new Error('You cannot modify your own role or disable your own active session.');
+  }
+  const actorIsSuper = isSuperAdminUser(actor);
+  if (updates.role === 'super_admin' && !actorIsSuper) {
+    throw new Error('Restricted System Administrators cannot assign Super Administrator / Owner privileges.');
+  }
+  if (updates.role === 'admin' && !actorIsSuper && !actor.adminLimits?.canCreateSystemAdmins) {
+    throw new Error('You do not have permission to assign the System Administrator role.');
+  }
+
+  // Try server Admin endpoints first if available
   try {
+    const headers = await getBearerHeaders();
+    if (updates.role !== undefined) {
+      const resp = await fetch(`/api/admin/users/${encodeURIComponent(uId)}/role`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ role: updates.role }),
+      });
+      if (resp.ok) {
+        if (updates.disabled === undefined) return;
+      } else if (resp.status !== 503) {
+        const body = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || 'Role update failed.');
+      } else {
+        throw new Error('SERVER_UNCONFIGURED');
+      }
+    }
+    if (updates.disabled !== undefined) {
+      const resp = await fetch(`/api/admin/users/${encodeURIComponent(uId)}/status`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ disabled: updates.disabled }),
+      });
+      if (resp.ok) return;
+      if (resp.status !== 503) {
+        const body = (await resp.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || 'Status update failed.');
+      }
+      throw new Error('SERVER_UNCONFIGURED');
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message !== 'SERVER_UNCONFIGURED' && !err.message.includes('Failed to fetch')) {
+      throw err;
+    }
+  }
+
+  try {
+    const activeSuperAdminsSnap = await getDocs(
+      query(collection(db, 'users'), where('role', '==', 'super_admin'), where('disabled', '==', false))
+    );
+    const activeSuperAdminIds = activeSuperAdminsSnap.docs.map(d => d.id);
+
     await runTransaction(db, async tx => {
       const userRef = doc(db, 'users', uId);
       const snap = await tx.get(userRef);
       if (!snap.exists()) throw new Error('Staff user record not found.');
       const cur = snap.data() as UserSession;
-      tx.update(userRef, {
+
+      if (isPermanentOwnerEmail(cur.email) || cur.isPermanentOwner) {
+        throw new Error('Permanent Super Administrator / Owner (Shewonshezy12@gmail.com) cannot be demoted, disabled, or modified.');
+      }
+
+      if (cur.role === 'super_admin' && !actorIsSuper) {
+        throw new Error('Restricted System Administrators cannot modify or disable a Super Administrator / Owner.');
+      }
+
+      const removingSuperAdmin =
+        cur.role === 'super_admin' &&
+        !cur.disabled &&
+        ((updates.role !== undefined && updates.role !== 'super_admin') || updates.disabled === true);
+
+      if (removingSuperAdmin && activeSuperAdminIds.length <= 1 && activeSuperAdminIds.includes(uId)) {
+        throw new Error('Cannot demote or disable the last active Super Administrator / Owner.');
+      }
+
+      const patchData: Record<string, unknown> = {
         ...updates,
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (updates.role === 'admin' && !cur.adminLimits) {
+        patchData.adminLimits = DEFAULT_RESTRICTED_ADMIN_LIMITS;
+      }
+
+      tx.update(userRef, patchData);
       tx.update(doc(db, 'staff_directory', uId), {
         ...(updates.role ? { role: updates.role } : {}),
         ...(updates.disabled !== undefined ? { active: !updates.disabled } : {}),
@@ -1403,14 +1895,250 @@ export async function fsUpdateUserRoleOrStatus(
       });
       tx.set(
         doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`)),
-        buildAuditEntry(actor, updates.disabled !== undefined ? 'STAFF_STATUS_CHANGED' : 'STAFF_ROLE_CHANGED', 'users', uId, {
-          previousRole: cur.role,
-          ...updates,
+        buildAuditEntry(
+          actor,
+          updates.disabled !== undefined
+            ? updates.disabled
+              ? 'ACCOUNT_DEACTIVATED'
+              : 'ACCOUNT_ACTIVATED'
+            : 'ROLE_CHANGE',
+          'users',
+          uId,
+          {
+            targetEmail: cur.email,
+            previousRole: cur.role,
+            ...updates,
+          }
+        )
+      );
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('Restricted') ||
+        err.message.includes('last active') ||
+        err.message.includes('own') ||
+        err.message.includes('Permanent Super Administrator'))
+    ) {
+      throw err;
+    }
+    handleFirestoreError(err, OperationType.UPDATE, `users/${uId}`);
+  }
+}
+
+export async function fsUpdateUserPermissions(
+  actor: UserSession,
+  targetUid: string,
+  payload: { adminLimits?: SystemAdminLimits; assignedPermissions?: string[] }
+): Promise<void> {
+  const uId = sanitizeId(targetUid);
+  try {
+    const headers = await getBearerHeaders();
+    const resp = await fetch(`/api/admin/users/${encodeURIComponent(uId)}/permissions`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    if (resp.ok) return;
+    if (resp.status !== 503) {
+      const body = (await resp.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error || 'Permission update failed.');
+    }
+  } catch (err) {
+    if (err instanceof Error && !err.message.includes('Failed to fetch')) throw err;
+  }
+
+  try {
+    await runTransaction(db, async tx => {
+      const userRef = doc(db, 'users', uId);
+      const snap = await tx.get(userRef);
+      if (!snap.exists()) throw new Error('Staff user record not found.');
+      const cur = snap.data() as UserSession;
+
+      if (isPermanentOwnerEmail(cur.email) || cur.isPermanentOwner) {
+        throw new Error('Permanent Super Administrator / Owner permissions cannot be restricted or removed.');
+      }
+      if (cur.role === 'admin' && !isSuperAdminUser(actor)) {
+        throw new Error('Only the Super Administrator / Owner can set System Administrator limits and permissions.');
+      }
+
+      const patch: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (cur.role === 'admin' && payload.adminLimits) {
+        patch.adminLimits = payload.adminLimits;
+        patch.assignedPermissions =
+          payload.assignedPermissions !== undefined
+            ? payload.assignedPermissions
+            : buildPermissionsFromAdminLimits(payload.adminLimits);
+      } else if (payload.assignedPermissions !== undefined) {
+        patch.assignedPermissions = payload.assignedPermissions;
+      }
+
+      tx.update(userRef, patch);
+      tx.set(
+        doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+        buildAuditEntry(actor, 'PERMISSION_CHANGE', 'users', uId, {
+          targetEmail: cur.email,
+          targetRole: cur.role,
+          ...(payload.adminLimits ? { adminLimits: payload.adminLimits } : {}),
+          ...(payload.assignedPermissions ? { assignedPermissions: payload.assignedPermissions } : {}),
         })
       );
     });
   } catch (err) {
+    if (err instanceof Error && (err.message.includes('Permanent') || err.message.includes('Only the Super'))) {
+      throw err;
+    }
     handleFirestoreError(err, OperationType.UPDATE, `users/${uId}`);
+  }
+}
+
+export async function fsResetUserPassword(
+  actor: UserSession,
+  targetUser: UserSession,
+  newPassword?: string
+): Promise<{ method: string; resetLink?: string; message: string }> {
+  if (
+    (isPermanentOwnerEmail(targetUser.email) || targetUser.isPermanentOwner) &&
+    !isPermanentOwnerEmail(actor.email)
+  ) {
+    throw new Error('Permanent Super Administrator / Owner password cannot be reset by another administrator.');
+  }
+  if (targetUser.role === 'super_admin' && !isSuperAdminUser(actor)) {
+    throw new Error('Restricted System Administrators cannot reset a Super Administrator password.');
+  }
+
+  try {
+    const headers = await getBearerHeaders();
+    const resp = await fetch(`/api/admin/users/${encodeURIComponent(targetUser.uid)}/reset-password`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(newPassword ? { newPassword } : {}),
+    });
+    if (resp.ok) {
+      const json = (await resp.json()) as { resetLink?: string };
+      return {
+        method: newPassword ? 'admin_password_set' : 'reset_link_generated',
+        resetLink: json.resetLink,
+        message: newPassword
+          ? `Password updated directly for ${targetUser.email}.`
+          : `Password reset link generated for ${targetUser.email}.`,
+      };
+    }
+    const body = (await resp.json().catch(() => ({}))) as { error?: string };
+    if (resp.status !== 503) {
+      throw new Error(body.error || 'Password reset failed.');
+    }
+    if (newPassword && newPassword.length > 0) {
+      throw new Error(
+        body.error ||
+          'Setting an explicit password requires server Admin SDK credentials. Leave New Password blank to email a Firebase Password Reset link.'
+      );
+    }
+  } catch (err) {
+    if (err instanceof Error && !err.message.includes('Failed to fetch')) {
+      throw err;
+    }
+    if (newPassword && newPassword.length > 0) {
+      throw new Error(
+        'Setting an explicit password requires server Admin SDK credentials. Leave New Password blank to email a Firebase Password Reset link.'
+      );
+    }
+  }
+
+  // Fallback: Firebase Client SDK password reset email + immutable audit entry
+  await sendPasswordResetEmail(auth, targetUser.email);
+  await setDoc(
+    doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+    buildAuditEntry(actor, 'PASSWORD_RESET', 'users', targetUser.uid, {
+      targetEmail: targetUser.email,
+      method: 'firebase_reset_email',
+    })
+  );
+  return {
+    method: 'firebase_reset_email',
+    message: `Password reset email dispatched via Firebase Authentication to ${targetUser.email} and logged to audit trail.`,
+  };
+}
+
+export async function fsDeleteUserAccount(
+  actor: UserSession,
+  targetUser: UserSession
+): Promise<{ authDeleted: boolean; message: string }> {
+  if (targetUser.uid === actor.uid) {
+    throw new Error('You cannot delete your own active account.');
+  }
+  if (isPermanentOwnerEmail(targetUser.email) || targetUser.isPermanentOwner) {
+    throw new Error('Permanent Super Administrator / Owner (Shewonshezy12@gmail.com) cannot be deleted.');
+  }
+  if (targetUser.role === 'super_admin' && !isSuperAdminUser(actor)) {
+    throw new Error('Restricted System Administrators cannot delete a Super Administrator account.');
+  }
+
+  try {
+    const headers = await getBearerHeaders();
+    const resp = await fetch(`/api/admin/users/${encodeURIComponent(targetUser.uid)}`, {
+      method: 'DELETE',
+      headers,
+    });
+    if (resp.ok) {
+      return {
+        authDeleted: true,
+        message: `Account ${targetUser.email} deleted from Firebase Authentication & Firestore and logged.`,
+      };
+    }
+    if (resp.status !== 503) {
+      const body = (await resp.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error || 'Account deletion failed.');
+    }
+  } catch (err) {
+    if (err instanceof Error && !err.message.includes('Failed to fetch')) throw err;
+  }
+
+  try {
+    const activeSuperAdminsSnap = await getDocs(
+      query(collection(db, 'users'), where('role', '==', 'super_admin'), where('disabled', '==', false))
+    );
+    const activeSuperAdminIds = activeSuperAdminsSnap.docs.map(d => d.id);
+
+    await runTransaction(db, async tx => {
+      const userRef = doc(db, 'users', targetUser.uid);
+      const snap = await tx.get(userRef);
+      if (!snap.exists()) throw new Error('Target staff profile not found.');
+      const cur = snap.data() as UserSession;
+
+      if (isPermanentOwnerEmail(cur.email) || cur.isPermanentOwner) {
+        throw new Error('Permanent Super Administrator / Owner (Shewonshezy12@gmail.com) cannot be deleted.');
+      }
+      if (
+        cur.role === 'super_admin' &&
+        !cur.disabled &&
+        activeSuperAdminIds.length <= 1 &&
+        activeSuperAdminIds.includes(targetUser.uid)
+      ) {
+        throw new Error('Cannot delete the last active Super Administrator / Owner.');
+      }
+
+      tx.delete(userRef);
+      tx.delete(doc(db, 'staff_directory', targetUser.uid));
+      tx.set(
+        doc(db, 'audit_logs', sanitizeId(`aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)),
+        buildAuditEntry(actor, 'ACCOUNT_DELETED', 'users', targetUser.uid, {
+          deletedEmail: cur.email,
+          deletedRole: cur.role,
+          authDeleted: false,
+        })
+      );
+    });
+
+    return {
+      authDeleted: false,
+      message: `Access profile for ${targetUser.email} deleted from Firestore (access revoked immediately). Server Admin SDK is required to remove the underlying Firebase Auth login identity.`,
+    };
+  } catch (err) {
+    if (err instanceof Error && (err.message.includes('Permanent') || err.message.includes('last active'))) {
+      throw err;
+    }
+    handleFirestoreError(err, OperationType.DELETE, `users/${targetUser.uid}`);
   }
 }
 
@@ -1449,6 +2177,7 @@ export async function fsExportDatabaseBackup(actor: UserSession): Promise<Record
     'test_rides',
     'trade_ins',
     'employees',
+    ...(hasUserPermission(actor, 'hr.payroll.read') ? ['employees_payroll'] : []),
     'leave_requests',
     'attendance',
     'service_cards',
@@ -1460,7 +2189,7 @@ export async function fsExportDatabaseBackup(actor: UserSession): Promise<Record
       const snap = await getDocs(collection(db, name));
       snapshot[name] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch {
-      // Collections restricted by separation of duties (e.g., employees_payroll) are intentionally skipped for non-HR
+      // Collections restricted by separation of duties (e.g., employees_payroll) are intentionally skipped for restricted admins
       snapshot[name] = [];
     }
   }

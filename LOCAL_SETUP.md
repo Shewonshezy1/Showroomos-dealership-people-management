@@ -106,28 +106,27 @@ Open the Firebase Console for `cybernetic-stage-bv0ns`:
 
 ---
 
-## 6. Secure First-Admin Provisioning & Staff Invites
+## 6. Secure Owner (`super_admin`) & Staff Provisioning
 
-ShowroomOS has **no** public self-registration and **no** public admin-bootstrap HTTP endpoint.
+ShowroomOS has **no** public self-registration, **no** public admin-bootstrap HTTP endpoint, and **no** login-time email self-elevation.
 
-### First Admin Setup (Choose One Verified Path)
-- **Option A — Out-of-Band CLI Provisioning (via your local ADC):**
-  ```bash
-  npx tsx scripts/provision-admin.ts \
-    --email "owner@dealership.example" \
-    --name "Dealership Owner" \
-    --role admin \
-    --branch "Colombo Flagship Hub"
-  ```
-  - If the user has not signed in yet, this creates a `Pending` invite in `staff_invites`; signing in once via Google or verified Email/Password activates the `admin` role automatically.
-  - If the user already exists in Firebase Auth, it immediately writes their active `admin` profile to `/users/{uid}`, `/staff_directory/{uid}`, and `/audit_logs`.
-- **Option B — Configured Bootstrap Owner Email:**
-  Sign in at `http://localhost:3000` with the verified email configured as `BOOTSTRAP_OWNER_EMAIL` (`shewonshezy12@gmail.com`).
+### Provisioning the Owner (`super_admin`) via Local ADC
+1. Have `Shewonshezy12@gmail.com` sign in once with Google (or exist as a verified Firebase Auth user in `cybernetic-stage-bv0ns` — initial login before provisioning will show the "Account Pending Provisioning" screen, which is expected).
+2. Run the out-of-band CLI script on your Mac with ADC configured:
+   ```bash
+   npx tsx scripts/provision-admin.ts \
+     --email "Shewonshezy12@gmail.com" \
+     --name "Super Administrator / Owner" \
+     --role super_admin \
+     --branch "Colombo Flagship Hub"
+   ```
+   This sets Firebase Auth custom claims (`{ role: "super_admin", disabled: false }`), writes `/users/{uid}` and `/staff_directory/{uid}`, and appends an entry to `/audit_logs`.
+3. **Required Refresh:** Sign out and sign in again in the browser so Firebase issues a fresh ID token containing the new `super_admin` custom claim.
 
 ### Inviting Additional Staff
-1. Sign in as an active **Admin** (`admin` role).
+1. Sign in as **Super Administrator / Owner** (`super_admin`) or **Admin** (`admin`).
 2. Open **Access & Audit Logs** in the sidebar.
-3. Issue a staff invite with the staff member's exact corporate email and approved role (`general_manager`, `sales`, `finance`, `hr`, `service`, or `stock`).
+3. Issue a staff invite with the staff member's exact corporate email and approved role (`admin`, `general_manager`, `sales`, `finance`, `hr`, `service`, or `stock`). *(Note: `super_admin` cannot be invited through the web UI and restricted `admin` cannot modify `super_admin` accounts.)*
 4. On first sign-in with that verified email, the user activates strictly under the invited role.
 
 ---

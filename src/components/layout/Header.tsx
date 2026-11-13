@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { useShowroom } from '../../context/ShowroomContext';
-import { ROLE_LABELS } from '../../auth/permissions';
+import { ROLE_LABELS, isSuperAdminUser } from '../../auth/permissions';
 import { LogOut, ShieldCheck } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -38,7 +38,9 @@ export const Header: React.FC = () => {
       case 'reports':
         return 'Reconciliation & CSV Exports';
       case 'admin':
-        return 'Staff Access Governance & Audit Trail';
+        return isSuperAdminUser(currentUser)
+          ? 'Super Admin Dashboard & Governance'
+          : 'Staff Access Governance & Audit Trail';
       default:
         return 'Showroom Operations';
     }

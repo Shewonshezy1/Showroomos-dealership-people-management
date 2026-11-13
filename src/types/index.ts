@@ -16,6 +16,7 @@ export type LeadSource =
   | 'Walk-in'
   | 'Digital inquiry'
   | 'Test ride event'
+  | 'Test Ride Experience'
   | 'Phone'
   | 'Referral';
 
@@ -24,6 +25,18 @@ export interface LeadNote {
   date: string; // DD/MM/YYYY
   author: string;
   text: string;
+}
+
+export type LeadPriority = 'Hot' | 'Warm' | 'Cold';
+
+export interface CallLog {
+  id: string;
+  date: string; // DD/MM/YYYY HH:mm
+  timestamp?: string; // formatted date & time
+  caller: string;
+  outcome: 'Interested' | 'Scheduled Test Ride' | 'Price Objection' | 'Follow Up Later' | 'Unreachable';
+  notes: string;
+  nextFollowUp?: string;
 }
 
 export interface Lead {
@@ -38,6 +51,10 @@ export interface Lead {
   salespersonName: string;
   source: LeadSource;
   status: LeadStatus;
+  priority?: LeadPriority;
+  budgetLkr?: number;
+  lostReason?: string;
+  callLogs?: CallLog[];
   nextFollowUpDate: string; // DD/MM/YYYY
   notes: LeadNote[];
   createdAt: string; // DD/MM/YYYY
@@ -106,6 +123,16 @@ export interface BookingTimelineItem {
   type: 'lead' | 'booking' | 'payment' | 'pdi' | 'delivery' | 'status';
 }
 
+export interface BookingAccessoryItem {
+  accessoryId: string;
+  name: string;
+  partNumber?: string;
+  priceLkr: number;
+  quantity: number;
+  installationStatus?: 'Pending Installation' | 'Installed at PDI' | 'Handover OTC';
+  isFitted?: boolean;
+}
+
 export interface Booking {
   id: string; // e.g. BK-2026-0042
   leadId?: string;
@@ -123,6 +150,9 @@ export interface Booking {
   totalPriceLkr: number;
   discountLkr: number;
   finalPriceLkr: number;
+  accessories?: BookingAccessoryItem[];
+  accessoriesTotalLkr?: number;
+  tradeInCreditLkr?: number;
   payments: PaymentRecord[];
   status: BookingStatus;
   deliveryChecklist: DeliveryChecklist;
@@ -130,6 +160,57 @@ export interface Booking {
   deliveredBy?: string;
   createdAt: string; // DD/MM/YYYY
   timeline: BookingTimelineItem[];
+}
+
+export interface Accessory {
+  id: string;
+  partNumber: string;
+  name: string;
+  category:
+    | 'Performance & Protection'
+    | 'Luggage & Touring'
+    | 'Seats & Comfort'
+    | 'Styling & Wheels'
+    | 'Riding Apparel';
+  compatibleModels: string[];
+  priceLkr: number;
+  stockQuantity: number;
+  description: string;
+  imageIcon: string;
+}
+
+export interface TestRideRecord {
+  id: string;
+  leadId?: string;
+  customerName: string;
+  customerPhone: string;
+  licenseNumber: string; // synthetic Sri Lankan license
+  model: string;
+  demoBikeChassis: string;
+  scheduledDate: string; // DD/MM/YYYY
+  timeSlot: string; // e.g. "10:30 AM"
+  route: 'Urban Colombo Circuit' | 'Marine Drive Coastal Route' | 'Suburban Expressway Link';
+  status: 'Scheduled' | 'Completed' | 'Cancelled' | 'No Show';
+  feedbackRating?: number; // 1-5
+  feedbackNotes?: string;
+  salespersonName: string;
+}
+
+export interface TradeInValuation {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  currentMakeModel: string; // e.g. "Bajaj Pulsar 150"
+  registrationNumber: string; // e.g. "WP BCN-4412"
+  manufacturingYear: number;
+  mileageKm: number;
+  condition: 'Excellent' | 'Good' | 'Fair' | 'Requires Reconditioning';
+  targetModelInterest: string; // e.g. "Classic 350"
+  estimatedValuationLkr: number;
+  appliedBookingId?: string;
+  evaluatorName: string;
+  date: string;
+  notes: string;
 }
 
 export interface EmployeeSalary {
@@ -203,13 +284,33 @@ export interface ServiceJobCard {
   estimatedCostLkr: number;
 }
 
-export type DemoRole = 'management' | 'sales' | 'hr';
+export type UserRole = 'management' | 'sales' | 'finance' | 'service' | 'hr';
+export type DemoRole = UserRole;
+
+export interface UserSession {
+  id: string;
+  fullName: string;
+  name?: string;
+  email: string;
+  role: UserRole;
+  designation: string;
+  roleLabel?: string;
+  department: string;
+  branch: string;
+  avatarUrl?: string;
+  phone?: string;
+}
+
 export type AppView =
   | 'dashboard'
   | 'crm'
   | 'inventory'
   | 'bookings'
   | 'delivery'
+  | 'accessories'
+  | 'testrides'
+  | 'tradein'
+  | 'financing'
   | 'hr'
   | 'service'
   | 'reports';

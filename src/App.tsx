@@ -15,6 +15,10 @@ import { DeliveryView } from './views/DeliveryView';
 import { HrView } from './views/HrView';
 import { ServiceView } from './views/ServiceView';
 import { ReportsView } from './views/ReportsView';
+import { AccessoriesView } from './views/AccessoriesView';
+import { TestRidesView } from './views/TestRidesView';
+import { TradeInView } from './views/TradeInView';
+import { FinancingView } from './views/FinancingView';
 
 // Modals & Drawers
 import { LeadDetailDrawer } from './components/crm/LeadDetailDrawer';
@@ -28,9 +32,18 @@ import { NewBikeModal } from './components/inventory/NewBikeModal';
 import { PrintableBookingModal } from './components/common/PrintableBookingModal';
 import { DemoGuideModal } from './components/common/DemoGuideModal';
 import { ResetConfirmModal } from './components/common/ResetConfirmModal';
+import { NotificationSimulatorModal } from './components/common/NotificationSimulatorModal';
+
+import { LoginView } from './components/auth/LoginView';
+import { ProformaQuotationModal } from './components/crm/ProformaQuotationModal';
 
 const MainContent: React.FC = () => {
-  const { currentView } = useShowroom();
+  const { currentView, currentUser } = useShowroom();
+
+  // If user is not authenticated, display login portal
+  if (!currentUser) {
+    return <LoginView />;
+  }
 
   // Modal triggers
   const [newLeadModalOpen, setNewLeadModalOpen] = useState(false);
@@ -83,6 +96,10 @@ const MainContent: React.FC = () => {
               />
             )}
             {currentView === 'delivery' && <DeliveryView />}
+            {currentView === 'accessories' && <AccessoriesView />}
+            {currentView === 'testrides' && <TestRidesView />}
+            {currentView === 'tradein' && <TradeInView />}
+            {currentView === 'financing' && <FinancingView />}
             {currentView === 'hr' && <HrView />}
             {currentView === 'service' && <ServiceView />}
             {currentView === 'reports' && <ReportsView />}
@@ -125,11 +142,13 @@ const MainContent: React.FC = () => {
         onClose={() => setNewBikeModalOpen(false)}
       />
       <PrintableBookingModal />
+      <ProformaQuotationModal />
       <DemoGuideModal />
       <ResetConfirmModal
         isOpen={resetModalOpen}
         onClose={() => setResetModalOpen(false)}
       />
+      <NotificationSimulatorModal />
     </div>
   );
 };

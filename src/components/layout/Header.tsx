@@ -15,8 +15,10 @@ import { DemoRole } from '../../types';
 
 export const Header: React.FC<{ onOpenResetModal: () => void }> = ({ onOpenResetModal }) => {
   const {
+    currentUser,
+    logout,
     currentRole,
-    setCurrentRole,
+    switchUserRole,
     setDemoGuideOpen,
     currentView,
   } = useShowroom();
@@ -33,6 +35,14 @@ export const Header: React.FC<{ onOpenResetModal: () => void }> = ({ onOpenReset
         return 'Customer Bookings & Payments';
       case 'delivery':
         return 'Pre-Delivery Inspection & Handover';
+      case 'accessories':
+        return 'Genuine Accessories & Gear Catalog';
+      case 'testrides':
+        return 'Test Ride Operations & Feedback Log';
+      case 'tradein':
+        return 'Motorcycle Trade-In & Valuation Desk';
+      case 'financing':
+        return 'Motorcycle Leasing & EMI Simulator';
       case 'hr':
         return 'People Operations & Attendance';
       case 'service':
@@ -46,50 +56,54 @@ export const Header: React.FC<{ onOpenResetModal: () => void }> = ({ onOpenReset
 
   return (
     <header className="no-print bg-[#16171b] border-b border-[#292b32] text-white sticky top-0 z-30 select-none">
-      {/* Top Advisory Disclaimer Bar */}
-      <div className="bg-[#1f2026] border-b border-[#2a2c34] px-4 py-1.5 flex flex-wrap items-center justify-between text-xs text-stone-300">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-          <span className="font-semibold text-stone-200">
-            ShowroomOS Demo Proposal
+      {/* Top Dealer Status & Hub Bar */}
+      <div className="bg-[#1a1b22] border-b border-[#282a33] px-5 py-1.5 flex flex-wrap items-center justify-between text-xs text-stone-300">
+        <div className="flex items-center gap-2.5">
+          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span className="font-semibold text-white tracking-wide">
+            IDEAL NOVA MOTORS
           </span>
-          <span className="text-stone-500">|</span>
-          <span className="text-stone-300">
-            Ideal Motors Sri Lanka · Royal Enfield Showroom Operations
+          <span className="text-stone-600">|</span>
+          <span className="text-stone-300 font-medium">
+            Royal Enfield Authorized Flagship · Sri Lanka
           </span>
-          <span className="hidden md:inline text-stone-400 bg-stone-800/80 px-2 py-0.5 rounded text-[11px] border border-stone-700">
-            Independent proposal demo — not an official system
+          <span className="hidden md:inline text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded text-[11px] border border-emerald-800/60 font-mono">
+            DMS Operational · Live
           </span>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-stone-400">
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            Browser-Local Storage
+            Colombo Flagship Showroom
           </span>
           <span className="text-stone-600">·</span>
-          <span>Illustrative LKR Pricing & Payroll</span>
+          <span>Official LKR Pricing (Taxes Included)</span>
         </div>
       </div>
 
-      {/* Main Top Header: 3-Zone Contract */}
-      <div className="px-5 py-3 flex items-center justify-between gap-6">
-        {/* Zone 1: Brand & View Context */}
+      {/* Main Top Header */}
+      <div className="px-5 py-2.5 flex items-center justify-between gap-6">
+        {/* Brand & View Context */}
         <div className="flex items-center gap-4 min-w-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded bg-[#9b1c1c] text-white flex items-center justify-center font-bold text-sm tracking-wider shadow-sm border border-red-700">
-              RE
+          <div className="flex items-center gap-3">
+            <div className="bg-white px-2.5 py-1 rounded shadow-xs flex items-center border border-stone-300/40">
+              <img
+                src="/assets/aistudio/image_b229486a.png"
+                alt="Ideal Nova Motors"
+                className="h-7 w-auto object-contain"
+              />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-base font-bold tracking-tight text-white whitespace-nowrap">
+                <span className="text-sm font-bold tracking-tight text-white whitespace-nowrap">
                   ShowroomOS
                 </span>
-                <span className="text-[10px] font-medium uppercase tracking-wider text-amber-300/90 bg-amber-950/60 border border-amber-800/60 px-1.5 py-0.5 rounded">
-                  Proposal
+                <span className="text-[10px] font-bold uppercase tracking-wider text-rose-300 bg-rose-950/70 border border-rose-800/70 px-1.5 py-0.2 rounded">
+                  Royal Enfield
                 </span>
               </div>
               <div className="text-[11px] text-stone-400 whitespace-nowrap">
-                Royal Enfield Showroom · Colombo Flagship
+                Dealership & Enterprise Management
               </div>
             </div>
           </div>
@@ -97,36 +111,36 @@ export const Header: React.FC<{ onOpenResetModal: () => void }> = ({ onOpenReset
           <div className="hidden lg:block h-7 w-px bg-stone-700/60 mx-1"></div>
 
           <div className="hidden lg:block min-w-0">
-            <span className="text-xs uppercase tracking-wider text-stone-400 font-medium">
-              Current Module
+            <span className="text-[10px] uppercase tracking-wider text-stone-400 font-semibold block">
+              Active Module
             </span>
-            <h2 className="text-sm font-semibold text-stone-100 truncate">
+            <h2 className="text-sm font-bold text-stone-100 truncate">
               {getViewTitle()}
             </h2>
           </div>
         </div>
 
-        {/* Zone 2: Demo Role Preview Switcher (Explicitly labeled) */}
-        <div className="hidden md:flex items-center gap-2 bg-[#1f2127] p-1 rounded-lg border border-[#30333d]">
+        {/* Center: Quick Switcher for Staff Testing */}
+        <div className="hidden md:flex items-center gap-1.5 bg-[#1f2127] p-1 rounded-lg border border-[#30333d]">
           <span className="text-[11px] text-stone-400 px-2 flex items-center gap-1">
             <UserCheck className="w-3.5 h-3.5 text-stone-400" />
-            <span className="hidden xl:inline">Demo Role:</span>
+            <span className="hidden xl:inline">Staff View:</span>
           </span>
-          {(['management', 'sales', 'hr'] as DemoRole[]).map(role => {
+          {(['management', 'sales', 'hr'] as const).map(role => {
             const active = currentRole === role;
-            const labels: Record<DemoRole, string> = {
-              management: 'Management',
+            const labels: Record<string, string> = {
+              management: 'General Management',
               sales: 'Sales Consultant',
               hr: 'HR & People',
             };
             return (
               <button
                 key={role}
-                onClick={() => setCurrentRole(role)}
-                title="Demo role preview — not authentication"
+                onClick={() => switchUserRole(role)}
+                title={`Switch active view to ${labels[role]}`}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap ${
                   active
-                    ? 'bg-[#9b1c1c] text-white shadow-sm'
+                    ? 'bg-[#9b1c1c] text-white shadow-xs font-semibold'
                     : 'text-stone-300 hover:text-white hover:bg-stone-800'
                 }`}
               >
@@ -136,23 +150,46 @@ export const Header: React.FC<{ onOpenResetModal: () => void }> = ({ onOpenReset
           })}
         </div>
 
-        {/* Zone 3: Actions (Demo Guide & Reset) */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        {/* Right Actions: System User & Controls */}
+        <div className="flex items-center gap-3 shrink-0">
+          {currentUser && (
+            <div className="hidden sm:flex items-center gap-2.5 px-3 py-1 bg-stone-900 border border-stone-800 rounded-lg">
+              <div className="w-6 h-6 rounded-full bg-[#9b1c1c] text-white flex items-center justify-center font-bold text-xs">
+                {(currentUser.name || currentUser.fullName || 'U').charAt(0)}
+              </div>
+              <div className="text-left text-xs leading-tight">
+                <div className="font-semibold text-white truncate max-w-[120px]">
+                  {currentUser.name || currentUser.fullName}
+                </div>
+                <div className="text-[10px] text-stone-400">
+                  {currentUser.roleLabel || currentUser.designation}
+                </div>
+              </div>
+              <button
+                onClick={logout}
+                title="Sign out of dealership portal"
+                className="text-[11px] text-rose-400 hover:text-rose-300 ml-1 hover:underline font-medium"
+              >
+                Exit
+              </button>
+            </div>
+          )}
+
           <button
             onClick={() => setDemoGuideOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-200 bg-amber-950/70 hover:bg-amber-900/80 border border-amber-700/70 rounded-md transition-colors whitespace-nowrap"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-stone-200 bg-stone-800 hover:bg-stone-700 border border-stone-700 rounded-md transition-colors whitespace-nowrap"
           >
             <BookOpen className="w-3.5 h-3.5 text-amber-400" />
-            <span>Demo Walkthrough Guide</span>
+            <span className="hidden sm:inline">Operations Manual</span>
           </button>
 
           <button
             onClick={onOpenResetModal}
-            title="Reset demo data back to default state"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-300 hover:text-white bg-stone-800/80 hover:bg-stone-700 border border-stone-700 rounded-md transition-colors whitespace-nowrap"
+            title="Reset system database to fresh state"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-stone-400 hover:text-white bg-stone-900 hover:bg-stone-800 border border-stone-800 rounded-md transition-colors whitespace-nowrap"
           >
             <RotateCcw className="w-3.5 h-3.5 text-stone-400" />
-            <span className="hidden sm:inline">Reset Seed Data</span>
+            <span className="hidden lg:inline">Reset Data</span>
           </button>
         </div>
       </div>

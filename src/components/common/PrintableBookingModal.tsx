@@ -63,28 +63,36 @@ export const PrintableBookingModal: React.FC = () => {
 
         {/* Printable Sheet Canvas */}
         <div className="p-8 bg-white print:p-6 space-y-6 text-stone-800 font-sans">
-          {/* Prominent Legal Disclaimer Watermark */}
-          <div className="border-2 border-dashed border-amber-700 bg-amber-50 p-2.5 text-center text-xs font-bold text-amber-900 tracking-wide uppercase">
-            DEMO — NOT A TAX INVOICE · PROPOSAL SPECIMEN FOR IDEAL MOTORS SRI LANKA
+          {/* Official Document Banner */}
+          <div className="border border-stone-300 bg-stone-100 p-2.5 text-center text-xs font-bold text-stone-800 tracking-wider uppercase flex items-center justify-between">
+            <span>OFFICIAL MOTORCYCLE BOOKING ORDER & RECEIPT SUMMARY</span>
+            <span className="text-[10px] text-stone-500 font-normal">IDEAL NOVA MOTORS (PVT) LTD · SRI LANKA</span>
           </div>
 
           {/* Dealership Header */}
           <div className="flex justify-between items-start border-b border-stone-300 pb-5">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xl font-extrabold tracking-tight text-stone-900">
-                  IDEAL MOTORS (PVT) LTD
-                </span>
-                <span className="bg-[#9b1c1c] text-white text-[10px] font-bold px-2 py-0.5 rounded">
-                  ROYAL ENFIELD
-                </span>
+            <div className="flex items-center gap-4">
+              <img
+                src="/assets/aistudio/image_b229486a.png"
+                alt="Ideal Nova Motors"
+                className="h-10 w-auto object-contain"
+              />
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xl font-extrabold tracking-tight text-stone-900">
+                    IDEAL NOVA MOTORS
+                  </span>
+                  <span className="bg-[#9b1c1c] text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    ROYAL ENFIELD
+                  </span>
+                </div>
+                <p className="text-xs text-stone-600 mt-0.5">
+                  Authorized National Distributor & Flagship Operations · Sri Lanka
+                </p>
+                <p className="text-[11px] text-stone-500">
+                  298 Union Place, Colombo 02, Sri Lanka · Tel: +94 11 200 4500 · info@idealnovamotors.lk
+                </p>
               </div>
-              <p className="text-xs text-stone-600 mt-1">
-                Authorized Dealer & Showroom Operations · Colombo Flagship
-              </p>
-              <p className="text-[11px] text-stone-500">
-                298 Union Place, Colombo 02, Sri Lanka · Tel: +94 11 200 4500
-              </p>
             </div>
             <div className="text-right">
               <div className="text-xs uppercase text-stone-500 font-semibold">
@@ -231,10 +239,22 @@ export const PrintableBookingModal: React.FC = () => {
                 <span>Illustrative Vehicle Price:</span>
                 <span className="font-mono">{formatLKR(booking.totalPriceLkr)}</span>
               </div>
-              {booking.discountLkr > 0 && (
+              {(booking.discountLkr || 0) > 0 && (
                 <div className="flex justify-between text-emerald-700">
                   <span>Approved Discount:</span>
                   <span className="font-mono">-{formatLKR(booking.discountLkr)}</span>
+                </div>
+              )}
+              {(booking.accessoriesTotalLkr || 0) > 0 && (
+                <div className="flex justify-between text-amber-800">
+                  <span>Genuine Accessories & Gear:</span>
+                  <span className="font-mono">+{formatLKR(booking.accessoriesTotalLkr || 0)}</span>
+                </div>
+              )}
+              {(booking.tradeInCreditLkr || 0) > 0 && (
+                <div className="flex justify-between text-emerald-700 font-semibold">
+                  <span>Trade-In Exchange Credit:</span>
+                  <span className="font-mono">-{formatLKR(booking.tradeInCreditLkr || 0)}</span>
                 </div>
               )}
               <div className="flex justify-between font-bold text-stone-900 border-t border-stone-200 pt-1.5 text-sm">

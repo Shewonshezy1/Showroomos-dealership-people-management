@@ -19,7 +19,13 @@ import {
   ArrowRight,
   Truck,
   Check,
+  Sparkles,
+  Trash2,
+  Repeat,
+  Send,
+  MessageSquare,
 } from 'lucide-react';
+import { AttachAccessoryModal } from './AttachAccessoryModal';
 
 export const BookingDetailDrawer: React.FC<{
   onOpenAddPayment: (bookingId: string) => void;
@@ -32,10 +38,13 @@ export const BookingDetailDrawer: React.FC<{
     cancelBooking,
     setPrintableBookingId,
     setCurrentView,
+    removeAccessoryFromBooking,
+    openNotificationModal,
   } = useShowroom();
 
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('Customer finance declined');
+  const [attachModalOpen, setAttachModalOpen] = useState(false);
 
   if (!selectedBookingId) return null;
   const booking = bookings.find(b => b.id === selectedBookingId);
@@ -199,6 +208,50 @@ export const BookingDetailDrawer: React.FC<{
               </span>
             </div>
 
+            {/* Price Line Items Breakdown */}
+            <div className="bg-[#141518] p-3 rounded border border-stone-800 space-y-1.5 text-xs">
+              <div className="flex justify-between text-stone-400">
+                <span>Motorcycle Base Price:</span>
+                <span className="font-mono tabular-nums text-stone-300">
+                  {formatLKR(booking.totalPriceLkr)}
+                </span>
+              </div>
+
+              {(booking.discountLkr || 0) > 0 && (
+                <div className="flex justify-between text-emerald-400">
+                  <span>Promotional Discount:</span>
+                  <span className="font-mono tabular-nums">
+                    - {formatLKR(booking.discountLkr || 0)}
+                  </span>
+                </div>
+              )}
+
+              {(booking.accessoriesTotalLkr || 0) > 0 && (
+                <div className="flex justify-between text-amber-400">
+                  <span>Genuine Accessories & Gear:</span>
+                  <span className="font-mono tabular-nums">
+                    + {formatLKR(booking.accessoriesTotalLkr || 0)}
+                  </span>
+                </div>
+              )}
+
+              {(booking.tradeInCreditLkr || 0) > 0 && (
+                <div className="flex justify-between text-emerald-400 font-semibold">
+                  <span>Motorcycle Trade-In Credit:</span>
+                  <span className="font-mono tabular-nums">
+                    - {formatLKR(booking.tradeInCreditLkr || 0)}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex justify-between text-stone-100 font-bold pt-1 border-t border-stone-800">
+                <span>Final Adjusted Price:</span>
+                <span className="font-mono tabular-nums text-white text-sm">
+                  {formatLKR(booking.finalPriceLkr)}
+                </span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-3 gap-3">
               <div className="bg-[#141518] p-3 rounded border border-stone-800">
                 <span className="text-[10px] text-stone-400 uppercase font-semibold block">
@@ -235,6 +288,109 @@ export const BookingDetailDrawer: React.FC<{
                 </span>
               </div>
             )}
+          </div>
+
+          {/* Genuine Accessories Section */}
+          <div className="bg-[#1b1c21] p-4 rounded-lg border border-stone-800 space-y-3">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-red-400" />
+                <span className="font-bold text-stone-200 uppercase tracking-wider text-[11px]">
+                  Genuine Accessories & Apparel ({booking.accessories?.length || 0})
+                </span>
+              </div>
+              {!isCancelled && !isDelivered && (
+                <button
+                  type="button"
+                  onClick={() => setAttachModalOpen(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded bg-stone-800 hover:bg-red-800 text-stone-200 hover:text-white border border-stone-700 hover:border-red-700 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Accessory
+                </button>
+              )}
+            </div>
+
+            {(!booking.accessories || booking.accessories.length === 0) ? (
+              <p className="text-xs text-stone-500 italic py-1">
+                No optional accessories attached to this booking yet.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {booking.accessories.map(acc => (
+                  <div
+                    key={acc.accessoryId}
+                    className="p-2.5 bg-[#141518] rounded border border-stone-800 flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <div className="font-medium text-stone-200">
+                        {acc.name} <span className="text-stone-500">× {acc.quantity}</span>
+                      </div>
+                      <div className="text-[10px] text-stone-400 font-mono">
+                        Unit: {formatLKR(acc.priceLkr)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono font-bold text-stone-100">
+                        {formatLKR(acc.priceLkr * acc.quantity)}
+                      </span>
+                      {!isCancelled && !isDelivered && (
+                        <button
+                          type="button"
+                          onClick={() => removeAccessoryFromBooking(booking.id, acc.accessoryId)}
+                          title="Remove accessory"
+                          className="p-1 text-stone-500 hover:text-rose-400 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Customer Notification Quick Dispatch Strip */}
+          <div className="p-3 bg-stone-900/60 rounded-lg border border-stone-800 flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2 text-stone-300">
+              <MessageSquare className="w-4 h-4 text-emerald-400" />
+              <span>Customer Communications:</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  openNotificationModal({
+                    title: 'Booking Confirmation & Deposit Receipt',
+                    recipientName: booking.customerName,
+                    recipientPhone: booking.customerPhone,
+                    message: `Dear ${booking.customerName},\nThank you for choosing Ideal Motors!\nYour Royal Enfield booking #${booking.id} (${booking.bikeModel} · ${booking.bikeColour}) has been confirmed.\nVerified Deposit: ${formatLKR(verifiedPaid)}\nOutstanding Balance: ${formatLKR(balance)}.\nShowroom: Colombo 03 Flagship.\nHotline: 011 234 5678`,
+                    channel: 'WhatsApp',
+                    purpose: 'Booking Confirmation',
+                  })
+                }
+                className="px-2.5 py-1 text-[11px] font-medium bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/60 rounded transition-colors"
+              >
+                WhatsApp Receipt
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  openNotificationModal({
+                    title: 'Payment Reminder & Balance Due',
+                    recipientName: booking.customerName,
+                    recipientPhone: booking.customerPhone,
+                    message: `Dear ${booking.customerName},\nThis is a friendly reminder from Ideal Motors Royal Enfield Showroom.\nBooking #${booking.id} (${booking.bikeModel}) has an outstanding balance of ${formatLKR(balance)}.\nPlease settle before your scheduled PDI inspection for seamless delivery.\nThank you!`,
+                    channel: 'SMS',
+                    purpose: 'Balance Reminder',
+                  })
+                }
+                className="px-2.5 py-1 text-[11px] font-medium bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700 rounded transition-colors"
+              >
+                SMS Balance
+              </button>
+            </div>
           </div>
 
           {/* Payment Ledger with 1-Click Verification Toggle */}
@@ -457,6 +613,13 @@ export const BookingDetailDrawer: React.FC<{
           </div>
         </div>
       )}
+
+      {/* Attach Accessory Modal */}
+      <AttachAccessoryModal
+        isOpen={attachModalOpen}
+        onClose={() => setAttachModalOpen(false)}
+        preSelectedBookingId={booking.id}
+      />
     </div>
   );
 };

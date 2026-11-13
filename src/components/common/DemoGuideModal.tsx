@@ -92,6 +92,62 @@ export const DemoGuideModal: React.FC = () => {
       instruction:
         'Download any of the 3 CSV export files. Verify the totals reconcile exactly with the metrics in the Executive Overview.',
     },
+    {
+      step: '06',
+      title: 'Genuine Accessories & Gear Catalog',
+      objective:
+        'Attach original equipment touring parts or protective gear to an active booking and see the final invoice price adjust instantly.',
+      target: 'Accessories & Parts Bay',
+      actionText: 'Explore Accessories',
+      onTrigger: () => {
+        setCurrentView('accessories');
+        setDemoGuideOpen(false);
+      },
+      instruction:
+        'Browse through genuine touring seats, sump guards, and apparel. Click "Add to Booking" to attach any item to an active customer order.',
+    },
+    {
+      step: '07',
+      title: 'Demo Fleet Test Rides & Lead Conversion',
+      objective:
+        'Track demo motorcycles, verify synthetic Sri Lankan driving licenses, log customer feedback ratings, and convert to CRM leads with 1 click.',
+      target: 'Test Rides Experience Desk',
+      actionText: 'Open Test Rides',
+      onTrigger: () => {
+        setCurrentView('testrides');
+        setDemoGuideOpen(false);
+      },
+      instruction:
+        'Log a test ride on the Hunter 350 or Himalayan 450. Click "Convert Lead" to seamlessly insert the customer directly into the active sales pipeline!',
+    },
+    {
+      step: '08',
+      title: 'Motorcycle Trade-In & Exchange Credit',
+      objective:
+        'Evaluate multi-brand commuter bikes (Pulsar, FZ, Hornet, Apache) and deduct fair-market credit directly from a new bike booking balance.',
+      target: 'Bike Exchange Desk',
+      actionText: 'Open Trade-In Desk',
+      onTrigger: () => {
+        setCurrentView('tradein');
+        setDemoGuideOpen(false);
+      },
+      instruction:
+        'Run an instant valuation on a commuter motorcycle and click "Apply to Booking". The valuation amount is deducted as an exchange credit on the customer\'s bill.',
+    },
+    {
+      step: '09',
+      title: 'Leasing & EMI Financing Simulator',
+      objective:
+        'Simulate monthly leasing installments with adjustable down payment %, tenures, and representative Sri Lankan bank interest rates.',
+      target: 'Leasing & EMI Calculator',
+      actionText: 'Open Financing Desk',
+      onTrigger: () => {
+        setCurrentView('financing');
+        setDemoGuideOpen(false);
+      },
+      instruction:
+        'Adjust the down payment slider and tenure. Review the annual amortization schedule and click "WhatsApp Quote" to test the simulated customer dispatch.',
+    },
   ];
 
   return (

@@ -18,7 +18,13 @@ import {
   FileCheck2,
   Trash2,
   AlertCircle,
+  PhoneCall,
+  FileText,
+  Flame,
+  MessageSquare,
 } from 'lucide-react';
+import { LeadPriority } from '../../types';
+import { LogCallModal } from './LogCallModal';
 
 export const LeadDetailDrawer: React.FC<{
   onOpenConvertModal: (leadId: string) => void;
@@ -28,13 +34,17 @@ export const LeadDetailDrawer: React.FC<{
     setSelectedLeadId,
     leads,
     updateLead,
+    updateLeadPriority,
     addLeadNote,
     deleteLead,
     setSelectedBookingId,
     setCurrentView,
+    setProformaQuoteLeadId,
+    openNotificationModal,
   } = useShowroom();
 
   const [newNoteText, setNewNoteText] = useState('');
+  const [logCallModalOpen, setLogCallModalOpen] = useState(false);
 
   if (!selectedLeadId) return null;
 
@@ -147,6 +157,75 @@ export const LeadDetailDrawer: React.FC<{
             </div>
           </div>
 
+          {/* Priority & Quick Actions */}
+          <div className="bg-[#202228] p-3.5 rounded-lg border border-stone-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase font-bold text-stone-400 flex items-center gap-1.5">
+                <Flame className="w-3.5 h-3.5 text-amber-500" />
+                Lead Priority
+              </span>
+              <div className="flex items-center gap-1.5">
+                {(['Hot', 'Warm', 'Cold'] as LeadPriority[]).map((p) => {
+                  const isCur = (lead.priority || 'Warm') === p;
+                  return (
+                    <button
+                      key={p}
+                      onClick={() => updateLeadPriority(lead.id, p)}
+                      className={`px-2.5 py-1 text-[11px] font-bold rounded transition-colors ${
+                        isCur
+                          ? p === 'Hot'
+                            ? 'bg-rose-600 text-white shadow-xs'
+                            : p === 'Warm'
+                            ? 'bg-amber-600 text-white shadow-xs'
+                            : 'bg-blue-600 text-white shadow-xs'
+                          : 'bg-stone-800/80 text-stone-400 hover:text-stone-200 hover:bg-stone-700'
+                      }`}
+                    >
+                      {p === 'Hot' ? '🔥 Hot' : p === 'Warm' ? '⚡ Warm' : '❄️ Cold'}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Quick Action Buttons */}
+            <div className="grid grid-cols-3 gap-2 pt-1 border-t border-stone-800/80">
+              <button
+                type="button"
+                onClick={() => setLogCallModalOpen(true)}
+                className="flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white rounded-md border border-stone-700 transition-colors"
+              >
+                <PhoneCall className="w-3.5 h-3.5 text-sky-400" />
+                <span>Log Call</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setProformaQuoteLeadId(lead.id)}
+                className="flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white rounded-md border border-stone-700 transition-colors"
+              >
+                <FileText className="w-3.5 h-3.5 text-amber-400" />
+                <span>Quotation</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  openNotificationModal({
+                    title: 'Royal Enfield Colombo — Proforma & Test Ride Invitation',
+                    recipientName: lead.customerName,
+                    recipientPhone: lead.phone,
+                    channel: 'WhatsApp',
+                    purpose: 'Sales Lead Quotation Follow-up',
+                    message: `Official quotation and test ride booking invite prepared for ${lead.customerName}. Reach out via Ideal Nova Motors direct hotline (+94 11 200 4500).`,
+                  })
+                }
+                className="flex items-center justify-center gap-1.5 py-2 px-2 text-xs font-semibold bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 rounded-md border border-emerald-800/60 transition-colors"
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+                <span>WhatsApp</span>
+              </button>
+            </div>
+          </div>
+
           {/* Contact & Sales Details */}
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div className="bg-[#1c1d22] p-3.5 rounded-lg border border-stone-800/90 space-y-2">
@@ -204,6 +283,41 @@ export const LeadDetailDrawer: React.FC<{
               />
             </div>
           </div>
+
+          {/* Call Logs & Interactions */}
+          {lead.callLogs && lead.callLogs.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-stone-400 flex items-center gap-1.5">
+                  <PhoneCall className="w-3.5 h-3.5 text-sky-400" />
+                  Call Log History ({lead.callLogs.length})
+                </h4>
+              </div>
+              <div className="space-y-2">
+                {lead.callLogs.map((log) => (
+                  <div
+                    key={log.id}
+                    className="bg-[#1f2025] p-2.5 rounded-lg border border-stone-800 text-xs space-y-1"
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-sky-400">
+                        {log.outcome}
+                      </span>
+                      <span className="text-stone-400 font-mono text-[10px]">
+                        {log.timestamp || log.date} · {log.caller}
+                      </span>
+                    </div>
+                    <p className="text-stone-300 text-[11px]">{log.notes}</p>
+                    {log.nextFollowUp && (
+                      <p className="text-[10px] text-amber-400/90 font-mono">
+                        Follow-up scheduled: {log.nextFollowUp}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Notes & Activity Log */}
           <div className="space-y-3">
@@ -269,6 +383,13 @@ export const LeadDetailDrawer: React.FC<{
           </button>
         </div>
       </div>
+
+      {/* Log Call Modal */}
+      <LogCallModal
+        isOpen={logCallModalOpen}
+        onClose={() => setLogCallModalOpen(false)}
+        leadId={lead.id}
+      />
     </div>
   );
 };

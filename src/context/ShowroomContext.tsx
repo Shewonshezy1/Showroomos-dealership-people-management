@@ -13,11 +13,18 @@ import {
   Lead,
   ServiceJobCard,
   DemoRole,
+  UserRole,
+  UserSession,
   AppView,
   PaymentRecord,
   DeliveryChecklist,
   AttendanceStatus,
   LeaveStatus,
+  Accessory,
+  TestRideRecord,
+  TradeInValuation,
+  CallLog,
+  LeadPriority,
 } from '../types';
 import {
   INITIAL_BIKES,
@@ -27,10 +34,20 @@ import {
   INITIAL_LEAVE_REQUESTS,
   INITIAL_ATTENDANCE,
   INITIAL_SERVICE_CARDS,
+  INITIAL_ACCESSORIES,
+  INITIAL_TEST_RIDES,
+  INITIAL_TRADE_INS,
+  PRESET_USERS,
 } from '../data/seedData';
 import { getTodayDDMMYYYY, generateBookingId } from '../utils/formatters';
 
 interface ShowroomContextType {
+  // Authentication & Session
+  currentUser: UserSession | null;
+  login: (email: string, password?: string, role?: UserRole) => boolean;
+  logout: () => void;
+  switchUserRole: (role: UserRole) => void;
+
   // Navigation & Role
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
@@ -47,6 +64,9 @@ interface ShowroomContextType {
   leaveRequests: LeaveRequest[];
   attendance: AttendanceRecord[];
   serviceJobCards: ServiceJobCard[];
+  accessories: Accessory[];
+  testRides: TestRideRecord[];
+  tradeIns: TradeInValuation[];
 
   // Reconciled Metrics
   metrics: {
@@ -60,6 +80,9 @@ interface ShowroomContextType {
     totalStockValueLkr: number;
     totalPipelineValueLkr: number;
     readyForDeliveryCount: number;
+    totalAccessoriesStockValueLkr: number;
+    scheduledTestRidesCount: number;
+    activeTradeInsCount: number;
   };
 
   // Lead Actions
@@ -125,10 +148,65 @@ interface ShowroomContextType {
   updateServiceStatus: (jobCardId: string, status: ServiceJobCard['status']) => void;
   addServiceJobCard: (card: Omit<ServiceJobCard, 'id'>) => void;
 
+  // Accessories Actions
+  addAccessoryToBooking: (
+    bookingId: string,
+    accessoryId: string,
+    quantity?: number
+  ) => { success: boolean; error?: string };
+  removeAccessoryFromBooking: (
+    bookingId: string,
+    accessoryId: string
+  ) => { success: boolean; error?: string };
+
+  // Test Ride Actions
+  addTestRide: (record: Omit<TestRideRecord, 'id'>) => void;
+  updateTestRideStatus: (
+    id: string,
+    status: TestRideRecord['status'],
+    rating?: number,
+    notes?: string
+  ) => void;
+  convertTestRideToLead: (testRideId: string) => { success: boolean; leadId?: string };
+
+  // Trade-In Actions
+  addTradeInValuation: (val: Omit<TradeInValuation, 'id' | 'date'>) => { success: boolean; id: string };
+  applyTradeInToBooking: (tradeInId: string, bookingId: string) => { success: boolean; error?: string };
+
+  // Notification Simulator
+  notificationModal: {
+    isOpen: boolean;
+    title: string;
+    recipientPhone: string;
+    recipientName: string;
+    message: string;
+    channel: 'SMS' | 'WhatsApp';
+    purpose: string;
+  } | null;
+  openNotificationModal: (payload: {
+    title: string;
+    recipientPhone: string;
+    recipientName: string;
+    message: string;
+    channel?: 'SMS' | 'WhatsApp';
+    purpose: string;
+  }) => void;
+  closeNotificationModal: () => void;
+
   // Global Actions
   resetDemoData: () => void;
   selectedLeadId: string | null;
   setSelectedLeadId: (id: string | null) => void;
+  // CRM Enhancements
+  crmViewMode: 'kanban' | 'list';
+  setCrmViewMode: (mode: 'kanban' | 'list') => void;
+  addCallLogToLead: (leadId: string, call: Omit<CallLog, 'id' | 'date'>) => void;
+  updateLeadPriority: (leadId: string, priority: LeadPriority) => void;
+  markLeadLost: (leadId: string, reason: string) => void;
+  reassignLead: (leadId: string, salespersonId: string, salespersonName: string) => void;
+  proformaQuoteLeadId: string | null;
+  setProformaQuoteLeadId: (id: string | null) => void;
+
   selectedBookingId: string | null;
   setSelectedBookingId: (id: string | null) => void;
   selectedBikeId: string | null;
@@ -145,6 +223,70 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
   const [currentRole, setCurrentRole] = useState<DemoRole>('management');
   const [demoGuideOpen, setDemoGuideOpen] = useState<boolean>(false);
+
+  // Authentication State
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
+    try {
+      const saved = localStorage.getItem(`${STORAGE_KEY}_user`);
+      return saved ? JSON.parse(saved) : PRESET_USERS[0];
+    } catch {
+      return PRESET_USERS[0];
+    }
+  });
+
+  const [crmViewMode, setCrmViewMode] = useState<'kanban' | 'list'>('list');
+  const [proformaQuoteLeadId, setProformaQuoteLeadId] = useState<string | null>(null);
+
+  const login = (email: string, password = '', role?: UserRole): boolean => {
+    let matched = PRESET_USERS.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (!matched && role) {
+      matched = PRESET_USERS.find(u => u.role === role);
+    }
+    if (!matched) {
+      matched = {
+        id: `usr-${Date.now()}`,
+        fullName: email.split('@')[0].replace('.', ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        email,
+        role: role || 'sales',
+        designation: role === 'management' ? 'General Manager' : 'Sales Consultant',
+        department: 'Showroom Operations',
+        branch: 'Colombo Flagship Hub',
+      };
+    }
+    setCurrentUser(matched);
+    setCurrentRole(matched.role);
+    try {
+      localStorage.setItem(`${STORAGE_KEY}_user`, JSON.stringify(matched));
+    } catch {}
+    return true;
+  };
+
+  const logout = () => {
+    setCurrentUser(null);
+    try {
+      localStorage.removeItem(`${STORAGE_KEY}_user`);
+    } catch {}
+  };
+
+  const switchUserRole = (role: UserRole) => {
+    const matched = PRESET_USERS.find(u => u.role === role);
+    if (matched) {
+      setCurrentUser(matched);
+      setCurrentRole(role);
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_user`, JSON.stringify(matched));
+      } catch {}
+    } else {
+      setCurrentRole(role);
+      if (currentUser) {
+        const updated = { ...currentUser, role };
+        setCurrentUser(updated);
+        try {
+          localStorage.setItem(`${STORAGE_KEY}_user`, JSON.stringify(updated));
+        } catch {}
+      }
+    }
+  };
 
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
@@ -215,6 +357,66 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   });
 
+  const [accessories, setAccessories] = useState<Accessory[]>(() => {
+    try {
+      const saved = localStorage.getItem(`${STORAGE_KEY}_accessories`);
+      return saved ? JSON.parse(saved) : INITIAL_ACCESSORIES;
+    } catch {
+      return INITIAL_ACCESSORIES;
+    }
+  });
+
+  const [testRides, setTestRides] = useState<TestRideRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(`${STORAGE_KEY}_testrides`);
+      return saved ? JSON.parse(saved) : INITIAL_TEST_RIDES;
+    } catch {
+      return INITIAL_TEST_RIDES;
+    }
+  });
+
+  const [tradeIns, setTradeIns] = useState<TradeInValuation[]>(() => {
+    try {
+      const saved = localStorage.getItem(`${STORAGE_KEY}_tradeins`);
+      return saved ? JSON.parse(saved) : INITIAL_TRADE_INS;
+    } catch {
+      return INITIAL_TRADE_INS;
+    }
+  });
+
+  const [notificationModal, setNotificationModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    recipientPhone: string;
+    recipientName: string;
+    message: string;
+    channel: 'SMS' | 'WhatsApp';
+    purpose: string;
+  } | null>(null);
+
+  const openNotificationModal = (payload: {
+    title: string;
+    recipientPhone: string;
+    recipientName: string;
+    message: string;
+    channel?: 'SMS' | 'WhatsApp';
+    purpose: string;
+  }) => {
+    setNotificationModal({
+      isOpen: true,
+      title: payload.title,
+      recipientPhone: payload.recipientPhone,
+      recipientName: payload.recipientName,
+      message: payload.message,
+      channel: payload.channel || 'SMS',
+      purpose: payload.purpose,
+    });
+  };
+
+  const closeNotificationModal = () => {
+    setNotificationModal(null);
+  };
+
   // Persist to LocalStorage
   useEffect(() => {
     try {
@@ -225,10 +427,13 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       localStorage.setItem(`${STORAGE_KEY}_leaves`, JSON.stringify(leaveRequests));
       localStorage.setItem(`${STORAGE_KEY}_attendance`, JSON.stringify(attendance));
       localStorage.setItem(`${STORAGE_KEY}_service`, JSON.stringify(serviceJobCards));
+      localStorage.setItem(`${STORAGE_KEY}_accessories`, JSON.stringify(accessories));
+      localStorage.setItem(`${STORAGE_KEY}_testrides`, JSON.stringify(testRides));
+      localStorage.setItem(`${STORAGE_KEY}_tradeins`, JSON.stringify(tradeIns));
     } catch (e) {
       console.warn('LocalStorage save error (using memory state):', e);
     }
-  }, [leads, bikes, bookings, employees, leaveRequests, attendance, serviceJobCards]);
+  }, [leads, bikes, bookings, employees, leaveRequests, attendance, serviceJobCards, accessories, testRides, tradeIns]);
 
   // Derived Reconciled Metrics
   const metrics = useMemo(() => {
@@ -272,6 +477,13 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       );
     }).length;
 
+    const totalAccessoriesStockValueLkr = accessories.reduce(
+      (sum, a) => sum + a.priceLkr * a.stockQuantity,
+      0
+    );
+    const scheduledTestRidesCount = testRides.filter(tr => tr.status === 'Scheduled').length;
+    const activeTradeInsCount = tradeIns.filter(ti => !ti.appliedBookingId).length;
+
     return {
       activeLeadsCount,
       availableBikesCount,
@@ -283,8 +495,11 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       totalStockValueLkr,
       totalPipelineValueLkr,
       readyForDeliveryCount,
+      totalAccessoriesStockValueLkr,
+      scheduledTestRidesCount,
+      activeTradeInsCount,
     };
-  }, [leads, bikes, bookings, leaveRequests]);
+  }, [leads, bikes, bookings, leaveRequests, accessories, testRides, tradeIns]);
 
   // Lead Actions
   const addLead = (leadData: Omit<Lead, 'id' | 'createdAt' | 'notes'>) => {
@@ -328,6 +543,83 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const deleteLead = (id: string) => {
     setLeads(prev => prev.filter(l => l.id !== id));
+  };
+
+  const addCallLogToLead = (leadId: string, call: Omit<CallLog, 'id' | 'date'>) => {
+    const newCallLog: CallLog = {
+      ...call,
+      id: `cl-${Date.now()}`,
+      date: `${getTodayDDMMYYYY()} 11:30`,
+    };
+    setLeads(prev =>
+      prev.map(l =>
+        l.id === leadId
+          ? {
+              ...l,
+              callLogs: [newCallLog, ...(l.callLogs || [])],
+              notes: [
+                {
+                  id: `note-${Date.now()}`,
+                  date: getTodayDDMMYYYY(),
+                  author: call.caller,
+                  text: `Call Logged (${call.outcome}): ${call.notes}`,
+                },
+                ...l.notes,
+              ],
+            }
+          : l
+      )
+    );
+  };
+
+  const updateLeadPriority = (leadId: string, priority: LeadPriority) => {
+    setLeads(prev => prev.map(l => (l.id === leadId ? { ...l, priority } : l)));
+  };
+
+  const markLeadLost = (leadId: string, reason: string) => {
+    setLeads(prev =>
+      prev.map(l =>
+        l.id === leadId
+          ? {
+              ...l,
+              status: 'Lost',
+              lostReason: reason,
+              notes: [
+                {
+                  id: `note-${Date.now()}`,
+                  date: getTodayDDMMYYYY(),
+                  author: currentUser?.fullName || 'Sales Executive',
+                  text: `Lead marked as Lost. Reason: ${reason}`,
+                },
+                ...l.notes,
+              ],
+            }
+          : l
+      )
+    );
+  };
+
+  const reassignLead = (leadId: string, salespersonId: string, salespersonName: string) => {
+    setLeads(prev =>
+      prev.map(l =>
+        l.id === leadId
+          ? {
+              ...l,
+              salespersonId,
+              salespersonName,
+              notes: [
+                {
+                  id: `note-${Date.now()}`,
+                  date: getTodayDDMMYYYY(),
+                  author: currentUser?.fullName || 'Management',
+                  text: `Lead reassigned to ${salespersonName}.`,
+                },
+                ...l.notes,
+              ],
+            }
+          : l
+      )
+    );
   };
 
   // Bike Actions
@@ -863,6 +1155,187 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
     setServiceJobCards(prev => [newCard, ...prev]);
   };
 
+  // Accessories Actions
+  const addAccessoryToBooking = (bookingId: string, accessoryId: string, quantity = 1) => {
+    const accessory = accessories.find(a => a.id === accessoryId);
+    if (!accessory) return { success: false, error: 'Accessory not found in catalog.' };
+    if (accessory.stockQuantity < quantity) return { success: false, error: 'Insufficient accessory stock quantity.' };
+
+    let success = false;
+    setBookings(prev =>
+      prev.map(b => {
+        if (b.id !== bookingId) return b;
+        const currentAccessories = b.accessories || [];
+        const existingIdx = currentAccessories.findIndex(a => a.accessoryId === accessoryId);
+        let updatedAccessories = [...currentAccessories];
+        if (existingIdx >= 0) {
+          updatedAccessories[existingIdx] = {
+            ...updatedAccessories[existingIdx],
+            quantity: updatedAccessories[existingIdx].quantity + quantity,
+          };
+        } else {
+          updatedAccessories.push({
+            accessoryId,
+            name: accessory.name,
+            priceLkr: accessory.priceLkr,
+            quantity,
+            isFitted: false,
+          });
+        }
+        const accessoriesTotalLkr = updatedAccessories.reduce(
+          (sum, acc) => sum + acc.priceLkr * acc.quantity,
+          0
+        );
+        const tradeInCreditLkr = b.tradeInCreditLkr || 0;
+        const finalPriceLkr = Math.max(0, b.totalPriceLkr - (b.discountLkr || 0) + accessoriesTotalLkr - tradeInCreditLkr);
+        success = true;
+        return {
+          ...b,
+          accessories: updatedAccessories,
+          accessoriesTotalLkr,
+          finalPriceLkr,
+        };
+      })
+    );
+
+    if (success) {
+      setAccessories(prev =>
+        prev.map(a => (a.id === accessoryId ? { ...a, stockQuantity: a.stockQuantity - quantity } : a))
+      );
+    }
+    return { success };
+  };
+
+  const removeAccessoryFromBooking = (bookingId: string, accessoryId: string) => {
+    let releasedQty = 0;
+    setBookings(prev =>
+      prev.map(b => {
+        if (b.id !== bookingId) return b;
+        const currentAccessories = b.accessories || [];
+        const item = currentAccessories.find(a => a.accessoryId === accessoryId);
+        if (!item) return b;
+        releasedQty = item.quantity;
+        const updatedAccessories = currentAccessories.filter(a => a.accessoryId !== accessoryId);
+        const accessoriesTotalLkr = updatedAccessories.reduce(
+          (sum, acc) => sum + acc.priceLkr * acc.quantity,
+          0
+        );
+        const tradeInCreditLkr = b.tradeInCreditLkr || 0;
+        const finalPriceLkr = Math.max(0, b.totalPriceLkr - (b.discountLkr || 0) + accessoriesTotalLkr - tradeInCreditLkr);
+        return {
+          ...b,
+          accessories: updatedAccessories,
+          accessoriesTotalLkr,
+          finalPriceLkr,
+        };
+      })
+    );
+
+    if (releasedQty > 0) {
+      setAccessories(prev =>
+        prev.map(a => (a.id === accessoryId ? { ...a, stockQuantity: a.stockQuantity + releasedQty } : a))
+      );
+    }
+    return { success: true };
+  };
+
+  // Test Ride Actions
+  const addTestRide = (record: Omit<TestRideRecord, 'id'>) => {
+    const newRide: TestRideRecord = {
+      ...record,
+      id: `TR-2026-${String(testRides.length + 101).padStart(3, '0')}`,
+    };
+    setTestRides(prev => [newRide, ...prev]);
+  };
+
+  const updateTestRideStatus = (
+    id: string,
+    status: TestRideRecord['status'],
+    feedbackRating?: number,
+    feedbackNotes?: string
+  ) => {
+    setTestRides(prev =>
+      prev.map(tr =>
+        tr.id === id
+          ? {
+              ...tr,
+              status,
+              ...(feedbackRating !== undefined ? { feedbackRating } : {}),
+              ...(feedbackNotes !== undefined ? { feedbackNotes } : {}),
+            }
+          : tr
+      )
+    );
+  };
+
+  const convertTestRideToLead = (testRideId: string) => {
+    const tr = testRides.find(r => r.id === testRideId);
+    if (!tr) return { success: false };
+    const newLead: Lead = {
+      id: `lead-${Date.now()}`,
+      customerName: tr.customerName,
+      phone: tr.customerPhone,
+      email: `${tr.customerName.toLowerCase().replace(/\s+/g, '.')}@client.lk`,
+      city: 'Colombo',
+      modelInterest: tr.model,
+      colorPreference: 'Standard',
+      salespersonId: 'emp-001',
+      salespersonName: tr.salespersonName,
+      source: 'Test Ride Experience',
+      status: 'Test Ride',
+      nextFollowUpDate: getTodayDDMMYYYY(),
+      createdAt: getTodayDDMMYYYY(),
+      notes: [
+        {
+          id: `note-${Date.now()}`,
+          date: getTodayDDMMYYYY(),
+          author: tr.salespersonName,
+          text: `Customer completed test ride on ${tr.model} (${tr.route}). Rating: ${tr.feedbackRating ? `${tr.feedbackRating}/5 stars` : 'Pending'}. ${tr.feedbackNotes || ''}`,
+        },
+      ],
+    };
+    setLeads(prev => [newLead, ...prev]);
+    return { success: true, leadId: newLead.id };
+  };
+
+  // Trade-In Actions
+  const addTradeInValuation = (val: Omit<TradeInValuation, 'id' | 'date'>) => {
+    const id = `TI-2026-${String(tradeIns.length + 101).padStart(3, '0')}`;
+    const newVal: TradeInValuation = {
+      ...val,
+      id,
+      date: getTodayDDMMYYYY(),
+    };
+    setTradeIns(prev => [newVal, ...prev]);
+    return { success: true, id };
+  };
+
+  const applyTradeInToBooking = (tradeInId: string, bookingId: string) => {
+    const tradeIn = tradeIns.find(t => t.id === tradeInId);
+    if (!tradeIn) return { success: false, error: 'Valuation record not found.' };
+    const booking = bookings.find(b => b.id === bookingId);
+    if (!booking) return { success: false, error: 'Target booking not found.' };
+
+    const creditAmount = tradeIn.estimatedValuationLkr;
+    setBookings(prev =>
+      prev.map(b => {
+        if (b.id !== bookingId) return b;
+        const accessoriesTotal = b.accessoriesTotalLkr || 0;
+        const finalPriceLkr = Math.max(0, b.totalPriceLkr - (b.discountLkr || 0) + accessoriesTotal - creditAmount);
+        return {
+          ...b,
+          tradeInCreditLkr: creditAmount,
+          finalPriceLkr,
+        };
+      })
+    );
+
+    setTradeIns(prev =>
+      prev.map(t => (t.id === tradeInId ? { ...t, appliedBookingId: bookingId } : t))
+    );
+    return { success: true };
+  };
+
   // Reset Demo Data
   const resetDemoData = () => {
     try {
@@ -873,6 +1346,9 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
       localStorage.removeItem(`${STORAGE_KEY}_leaves`);
       localStorage.removeItem(`${STORAGE_KEY}_attendance`);
       localStorage.removeItem(`${STORAGE_KEY}_service`);
+      localStorage.removeItem(`${STORAGE_KEY}_accessories`);
+      localStorage.removeItem(`${STORAGE_KEY}_testrides`);
+      localStorage.removeItem(`${STORAGE_KEY}_tradeins`);
     } catch (e) {
       console.warn('Clear storage error:', e);
     }
@@ -883,6 +1359,10 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
     setLeaveRequests(INITIAL_LEAVE_REQUESTS);
     setAttendance(INITIAL_ATTENDANCE);
     setServiceJobCards(INITIAL_SERVICE_CARDS);
+    setAccessories(INITIAL_ACCESSORIES);
+    setTestRides(INITIAL_TEST_RIDES);
+    setTradeIns(INITIAL_TRADE_INS);
+    setNotificationModal(null);
     setSelectedLeadId(null);
     setSelectedBookingId(null);
     setSelectedBikeId(null);
@@ -892,6 +1372,18 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
   return (
     <ShowroomContext.Provider
       value={{
+        currentUser,
+        login,
+        logout,
+        switchUserRole,
+        crmViewMode,
+        setCrmViewMode,
+        addCallLogToLead,
+        updateLeadPriority,
+        markLeadLost,
+        reassignLead,
+        proformaQuoteLeadId,
+        setProformaQuoteLeadId,
         currentView,
         setCurrentView,
         currentRole,
@@ -905,6 +1397,9 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         leaveRequests,
         attendance,
         serviceJobCards,
+        accessories,
+        testRides,
+        tradeIns,
         metrics,
         addLead,
         updateLead,
@@ -924,6 +1419,16 @@ export const ShowroomProvider: React.FC<{ children: ReactNode }> = ({ children }
         markAttendance,
         updateServiceStatus,
         addServiceJobCard,
+        addAccessoryToBooking,
+        removeAccessoryFromBooking,
+        addTestRide,
+        updateTestRideStatus,
+        convertTestRideToLead,
+        addTradeInValuation,
+        applyTradeInToBooking,
+        notificationModal,
+        openNotificationModal,
+        closeNotificationModal,
         resetDemoData,
         selectedLeadId,
         setSelectedLeadId,

@@ -19,6 +19,10 @@ import {
   Plus,
   BookOpen,
   Calendar,
+  Sparkles,
+  Zap,
+  Repeat,
+  Calculator,
 } from 'lucide-react';
 
 export const DashboardView: React.FC<{
@@ -380,6 +384,97 @@ export const DashboardView: React.FC<{
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Showroom Experience & Special Programs Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div
+          onClick={() => setCurrentView('accessories')}
+          className="bg-[#18191d] border border-stone-800 hover:border-stone-700 p-4 rounded-xl cursor-pointer transition-all hover:bg-[#1c1d22] group"
+        >
+          <div className="flex items-center justify-between text-stone-400">
+            <span className="text-[11px] font-medium uppercase tracking-wider">Accessories & Gear</span>
+            <Sparkles className="w-4 h-4 text-stone-400 group-hover:text-red-400 transition-colors" />
+          </div>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-xl font-bold text-white font-mono tabular-nums">
+              {formatLKR(metrics.totalAccessoriesStockValueLkr)}
+            </span>
+            <span className="text-[11px] text-red-400 flex items-center gap-0.5 font-medium">
+              <span>Catalog</span>
+              <ArrowUpRight className="w-3 h-3" />
+            </span>
+          </div>
+          <div className="text-[11px] text-stone-400 mt-1">
+            Genuine Royal Enfield GMA Parts
+          </div>
+        </div>
+
+        <div
+          onClick={() => setCurrentView('testrides')}
+          className="bg-[#18191d] border border-stone-800 hover:border-stone-700 p-4 rounded-xl cursor-pointer transition-all hover:bg-[#1c1d22] group"
+        >
+          <div className="flex items-center justify-between text-stone-400">
+            <span className="text-[11px] font-medium uppercase tracking-wider">Test Ride Desk</span>
+            <Zap className="w-4 h-4 text-stone-400 group-hover:text-amber-400 transition-colors" />
+          </div>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-xl font-bold text-white font-mono tabular-nums">
+              {metrics.scheduledTestRidesCount} Slots
+            </span>
+            <span className="text-[11px] text-amber-400 flex items-center gap-0.5 font-medium">
+              <span>Demo Fleet</span>
+              <ArrowUpRight className="w-3 h-3" />
+            </span>
+          </div>
+          <div className="text-[11px] text-stone-400 mt-1">
+            Demo trials & driving license logs
+          </div>
+        </div>
+
+        <div
+          onClick={() => setCurrentView('tradein')}
+          className="bg-[#18191d] border border-stone-800 hover:border-stone-700 p-4 rounded-xl cursor-pointer transition-all hover:bg-[#1c1d22] group"
+        >
+          <div className="flex items-center justify-between text-stone-400">
+            <span className="text-[11px] font-medium uppercase tracking-wider">Trade-In Exchange</span>
+            <Repeat className="w-4 h-4 text-stone-400 group-hover:text-emerald-400 transition-colors" />
+          </div>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-xl font-bold text-white font-mono tabular-nums">
+              {metrics.activeTradeInsCount} Pending
+            </span>
+            <span className="text-[11px] text-emerald-400 flex items-center gap-0.5 font-medium">
+              <span>Valuations</span>
+              <ArrowUpRight className="w-3 h-3" />
+            </span>
+          </div>
+          <div className="text-[11px] text-stone-400 mt-1">
+            Multi-brand commuter credit desk
+          </div>
+        </div>
+
+        <div
+          onClick={() => setCurrentView('financing')}
+          className="bg-[#18191d] border border-stone-800 hover:border-stone-700 p-4 rounded-xl cursor-pointer transition-all hover:bg-[#1c1d22] group"
+        >
+          <div className="flex items-center justify-between text-stone-400">
+            <span className="text-[11px] font-medium uppercase tracking-wider">Leasing & EMI</span>
+            <Calculator className="w-4 h-4 text-stone-400 group-hover:text-blue-400 transition-colors" />
+          </div>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-xl font-bold text-white font-mono tabular-nums">
+              EMI Simulator
+            </span>
+            <span className="text-[11px] text-blue-400 flex items-center gap-0.5 font-medium">
+              <span>Calculate</span>
+              <ArrowUpRight className="w-3 h-3" />
+            </span>
+          </div>
+          <div className="text-[11px] text-stone-400 mt-1">
+            Down payments & bank leasing
           </div>
         </div>
       </div>
